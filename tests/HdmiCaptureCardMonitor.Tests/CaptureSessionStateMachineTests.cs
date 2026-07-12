@@ -37,6 +37,7 @@ public sealed class CaptureSessionStateMachineTests
         var events = 0;
         machine.StateChanged += (_, _) => events++;
 
+        Assert.Equal(isAllowed, machine.CanTransitionTo(target));
         var changed = machine.TryTransitionTo(target);
 
         Assert.Equal(isAllowed, changed);

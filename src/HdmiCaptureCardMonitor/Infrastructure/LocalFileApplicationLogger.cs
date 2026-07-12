@@ -45,8 +45,20 @@ public sealed class LocalFileApplicationLogger : IApplicationLogger, IDisposable
                 return;
             }
 
-            writer.Dispose();
             disposed = true;
+
+            try
+            {
+                writer.Dispose();
+            }
+            catch (IOException)
+            {
+                // A local flush failure must not destabilize application shutdown.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // A local access failure must not destabilize application shutdown.
+            }
         }
     }
 
