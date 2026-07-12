@@ -15,3 +15,6 @@
 13. Do not add analytics, network communication, or accounts.
 14. Never implement HDCP bypass or misleading protected-content support.
 15. Preserve compatibility with Microsoft Store packaging.
+16. Every implementation phase uses a dedicated branch and pull request; never modify `main` directly.
+17. Do not merge a phase until its diff, tests, risks, and scope have been reviewed.
+18. Passing CI does not replace required physical hardware testing.

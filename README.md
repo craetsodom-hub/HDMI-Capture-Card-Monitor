@@ -10,4 +10,4 @@ dotnet build HDMI-Capture-Card-Monitor.sln --configuration Release -p:Platform=x
 dotnet test HDMI-Capture-Card-Monitor.sln --configuration Release -p:Platform=x64
 ```
 
-The app targets .NET 8, Windows, x64, and `win-x64`. See `PRODUCT_SPEC.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `QA_MATRIX.md`, and `CODEX_RULES.md` before making changes.
+The app targets stable .NET 10, Windows, x64, and `win-x64`. See `PRODUCT_SPEC.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `QA_MATRIX.md`, and `CODEX_RULES.md` before making changes.

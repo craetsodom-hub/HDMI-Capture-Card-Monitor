@@ -48,7 +48,7 @@
             <DockPanel>
                 <Ellipse Width="8" Height="8" Fill="{DynamicResource StatusIdleBrush}" Margin="0,0,8,0" VerticalAlignment="Center" />
                 <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" />
-                <TextBlock DockPanel.Dock="Right" Text="Phase 0 · Idle" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                <TextBlock DockPanel.Dock="Right" Text="{Binding SessionStateDisplay}" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
             </DockPanel>
         </Border>
     </DockPanel>

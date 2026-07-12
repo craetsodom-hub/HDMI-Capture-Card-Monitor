@@ -6,9 +6,9 @@ namespace HdmiCaptureCardMonitor;
 
 public partial class MainWindow : Window
 {
-    public MainWindow(IApplicationLogger logger)
+    public MainWindow(IApplicationLogger logger, string? startupNotice = null)
     {
         InitializeComponent();
-        DataContext = new MainWindowViewModel(logger);
+        DataContext = new MainWindowViewModel(logger, startupNotice);
     }
 }

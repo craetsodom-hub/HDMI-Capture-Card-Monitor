@@ -10,12 +10,20 @@ public sealed partial class MainWindowViewModel : ObservableObject
     private readonly IApplicationLogger logger;
 
     [ObservableProperty] private string statusMessage = "No capture device selected";
-    [ObservableProperty] private CaptureSessionState sessionState = CaptureSessionState.Idle;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SessionStateDisplay))]
+    private CaptureSessionState sessionState = CaptureSessionState.Idle;
 
-    public MainWindowViewModel(IApplicationLogger logger)
+    public string SessionStateDisplay => $"Phase 0 · {SessionState}";
+
+    public MainWindowViewModel(IApplicationLogger logger, string? startupNotice = null)
     {
         this.logger = logger;
         logger.Information("Application shell started without a selected capture device.");
+        if (!string.IsNullOrWhiteSpace(startupNotice))
+        {
+            StatusMessage = startupNotice;
+        }
     }
 
     [RelayCommand]

@@ -5,20 +5,21 @@ namespace HdmiCaptureCardMonitor;
 
 public partial class App : Application
 {
-    private LocalFileApplicationLogger? logger;
+    private IApplicationLogger? logger;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        logger = new LocalFileApplicationLogger();
+        var loggerCreation = ApplicationLoggerFactory.CreateDefault();
+        logger = loggerCreation.Logger;
         logger.Information("Application startup completed.");
-        new MainWindow(logger).Show();
+        new MainWindow(logger, loggerCreation.StartupNotice).Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         logger?.Information("Application shutdown completed.");
-        logger?.Dispose();
+        (logger as IDisposable)?.Dispose();
         base.OnExit(e);
     }
 }
