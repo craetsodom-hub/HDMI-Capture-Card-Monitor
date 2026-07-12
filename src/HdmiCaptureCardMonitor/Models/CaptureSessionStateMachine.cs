@@ -34,7 +34,7 @@ public sealed class CaptureSessionStateMachine
         CaptureSessionState.DeviceReady => next is CaptureSessionState.Idle or CaptureSessionState.Enumerating or CaptureSessionState.Starting,
         CaptureSessionState.Starting => next is CaptureSessionState.DeviceReady or CaptureSessionState.Previewing or CaptureSessionState.Stopping or CaptureSessionState.Faulted,
         CaptureSessionState.Previewing => next is CaptureSessionState.Recording or CaptureSessionState.Reconnecting or CaptureSessionState.Stopping or CaptureSessionState.Faulted,
-        CaptureSessionState.Recording => next is CaptureSessionState.Reconnecting or CaptureSessionState.Stopping or CaptureSessionState.Faulted,
+        CaptureSessionState.Recording => next is CaptureSessionState.Previewing or CaptureSessionState.Reconnecting or CaptureSessionState.Stopping or CaptureSessionState.Faulted,
         CaptureSessionState.Reconnecting => next is CaptureSessionState.DeviceReady or CaptureSessionState.Starting or CaptureSessionState.Stopping or CaptureSessionState.Faulted,
         CaptureSessionState.Stopping => next is CaptureSessionState.Idle or CaptureSessionState.DeviceReady or CaptureSessionState.Faulted,
         CaptureSessionState.Faulted => next is CaptureSessionState.Idle or CaptureSessionState.Enumerating,

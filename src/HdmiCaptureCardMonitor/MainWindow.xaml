@@ -6,9 +6,19 @@
         mc:Ignorable="d" Title="HDMI Capture Card Monitor"
         Width="1100" Height="700" MinWidth="820" MinHeight="540"
         WindowStartupLocation="CenterScreen" UseLayoutRounding="True" SnapsToDevicePixels="True">
-    <DockPanel Margin="24">
-        <Grid DockPanel.Dock="Top" Margin="0,0,0,20">
-            <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" MinHeight="160" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,20">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Text="HDMI Capture Card Monitor" Style="{StaticResource TitleText}" />
                 <TextBlock Text="Monitor-first capture preview" Style="{StaticResource SubtitleText}" />
@@ -18,38 +28,59 @@
                 <Button Content="Help" Command="{Binding ShowHelpInformationCommand}" Style="{StaticResource SecondaryButton}" />
             </StackPanel>
         </Grid>
-        <Border Style="{StaticResource PreviewSurface}">
+
+        <Border Grid.Row="1" Style="{StaticResource PreviewSurface}" Margin="0,0,0,20">
             <Grid>
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="440">
+                <StackPanel MaxWidth="520" Margin="32" HorizontalAlignment="Stretch" VerticalAlignment="Center">
                     <TextBlock Text="No capture device selected" Style="{StaticResource PreviewMessage}" TextAlignment="Center" />
-                    <TextBlock Text="Connect a compatible USB HDMI capture card. Device discovery and preview are planned for later phases."
+                    <TextBlock Text="Connect a compatible USB HDMI capture card to begin."
                                Style="{StaticResource PreviewDescription}" TextAlignment="Center" TextWrapping="Wrap" />
                 </StackPanel>
             </Grid>
         </Border>
-        <Grid DockPanel.Dock="Bottom" Margin="0,20,0,0">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <StackPanel>
-                <TextBlock Text="DEVICE" Style="{StaticResource FieldLabel}" />
-                <ComboBox IsEnabled="False" SelectedIndex="0" Style="{StaticResource SelectorControl}"><ComboBoxItem Content="No device available" /></ComboBox>
-            </StackPanel>
-            <StackPanel Grid.Column="1" Margin="14,0,0,0">
-                <TextBlock Text="FORMAT" Style="{StaticResource FieldLabel}" />
-                <ComboBox IsEnabled="False" SelectedIndex="0" Style="{StaticResource SelectorControl}"><ComboBoxItem Content="Select a device first" /></ComboBox>
-            </StackPanel>
-            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom" Margin="20,0,0,0">
+
+        <Grid Grid.Row="2" Margin="0,0,0,16">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="DEVICE" Style="{StaticResource FieldLabel}" />
+                    <ComboBox IsEnabled="False" SelectedIndex="0" Style="{StaticResource SelectorControl}">
+                        <ComboBoxItem Content="No device available" />
+                    </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="14,0,0,0">
+                    <TextBlock Text="FORMAT" Style="{StaticResource FieldLabel}" />
+                    <ComboBox IsEnabled="False" SelectedIndex="0" Style="{StaticResource SelectorControl}">
+                        <ComboBoxItem Content="Select a device first" />
+                    </ComboBox>
+                </StackPanel>
+            </Grid>
+            <WrapPanel Grid.Row="1" Margin="0,14,0,0" HorizontalAlignment="Right">
                 <Button Content="Start" IsEnabled="False" Style="{StaticResource PrimaryButton}" />
                 <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource SecondaryButton}" />
                 <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource SecondaryButton}" />
                 <Button Content="Record" IsEnabled="False" Style="{StaticResource RecordButton}" />
-            </StackPanel>
+            </WrapPanel>
         </Grid>
-        <Border DockPanel.Dock="Bottom" Style="{StaticResource StatusBar}" Margin="0,16,0,0">
-            <DockPanel>
-                <Ellipse Width="8" Height="8" Fill="{DynamicResource StatusIdleBrush}" Margin="0,0,8,0" VerticalAlignment="Center" />
-                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" />
-                <TextBlock DockPanel.Dock="Right" Text="Phase 0 · Idle" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-            </DockPanel>
+
+        <Border Grid.Row="3" Style="{StaticResource StatusBar}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Ellipse Grid.Column="0" Width="8" Height="8" Fill="{DynamicResource StatusIdleBrush}" Margin="0,0,8,0" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <TextBlock Grid.Column="2" Text="{Binding SessionStateDisplay}" Margin="16,0,0,0" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+            </Grid>
         </Border>
-    </DockPanel>
+    </Grid>
 </Window>

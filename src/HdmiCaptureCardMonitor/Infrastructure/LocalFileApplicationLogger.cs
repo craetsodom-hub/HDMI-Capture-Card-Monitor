@@ -4,43 +4,132 @@ using System.Text;
 
 namespace HdmiCaptureCardMonitor.Infrastructure;
 
-/// <summary>Minimal local-only logger. Callers must not pass captured media or sensitive user data.</summary>
+/// <summary>Writes safe diagnostic text to a bounded set of local application log files.</summary>
 public sealed class LocalFileApplicationLogger : IApplicationLogger, IDisposable
 {
+    public const int DefaultRetentionCount = 10;
+
     private readonly object syncRoot = new();
     private readonly StreamWriter writer;
     private bool disposed;
 
-    public LocalFileApplicationLogger()
+    public LocalFileApplicationLogger(
+        string directory,
+        int retentionCount = DefaultRetentionCount,
+        Func<DateTimeOffset>? utcNow = null,
+        Func<int>? processId = null)
     {
-        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HdmiCaptureCardMonitor", "Logs");
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(retentionCount);
+
         Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, $"app-{DateTime.UtcNow:yyyyMMdd-HHmmss}.log");
-        writer = new StreamWriter(path, append: false, new UTF8Encoding(false)) { AutoFlush = true };
+        writer = CreateWriter(directory, utcNow?.Invoke() ?? DateTimeOffset.UtcNow, processId?.Invoke() ?? Environment.ProcessId);
+        ApplyRetention(directory, retentionCount);
     }
 
     public void Debug(string message) => Write(LogLevel.Debug, message);
+
     public void Information(string message) => Write(LogLevel.Information, message);
+
     public void Warning(string message) => Write(LogLevel.Warning, message);
-    public void Error(string message, Exception? exception = null) => Write(LogLevel.Error, exception is null ? message : $"{message} | {exception.GetType().Name}: {exception.Message}");
+
+    public void LogError(string message, Exception? exception = null) =>
+        Write(LogLevel.Error, exception is null ? message : $"{message} | {exception.GetType().Name}: {exception.Message}");
 
     public void Dispose()
     {
         lock (syncRoot)
         {
-            if (disposed) return;
-            writer.Dispose();
+            if (disposed)
+            {
+                return;
+            }
+
             disposed = true;
+
+            try
+            {
+                writer.Dispose();
+            }
+            catch (IOException)
+            {
+                // A local flush failure must not destabilize application shutdown.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // A local access failure must not destabilize application shutdown.
+            }
+        }
+    }
+
+    private static StreamWriter CreateWriter(string directory, DateTimeOffset timestamp, int processId)
+    {
+        var fileStem = string.Create(
+            CultureInfo.InvariantCulture,
+            $"app-{timestamp.UtcDateTime:yyyyMMdd-HHmmss-fffffff}-{processId}");
+
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            var suffix = attempt == 0 ? string.Empty : $"-{attempt}";
+            var path = Path.Combine(directory, $"{fileStem}{suffix}.log");
+
+            try
+            {
+                var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+                return new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)) { AutoFlush = true };
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+                // A concurrent instance used this name. Try a deterministic suffix.
+            }
+        }
+
+        throw new IOException("Could not create a unique application log file.");
+    }
+
+    private static void ApplyRetention(string directory, int retentionCount)
+    {
+        try
+        {
+            var oldLogs = Directory.EnumerateFiles(directory, "app-*.log", SearchOption.TopDirectoryOnly)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Skip(retentionCount);
+
+            foreach (var oldLog in oldLogs)
+            {
+                oldLog.Delete();
+            }
+        }
+        catch (IOException)
+        {
+            // Retention must never prevent startup; unrelated files are never targeted.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Retention must never prevent startup; unrelated files are never targeted.
         }
     }
 
     private void Write(LogLevel level, string message)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
+
         lock (syncRoot)
         {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{DateTimeOffset.UtcNow:O} [{level}] {message}"));
+            if (disposed)
+            {
+                return;
+            }
+
+            try
+            {
+                writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{DateTimeOffset.UtcNow:O} [{level}] {message}"));
+            }
+            catch (IOException)
+            {
+                // Logging must not destabilize the monitor shell when the local disk becomes unavailable.
+            }
         }
     }
 }

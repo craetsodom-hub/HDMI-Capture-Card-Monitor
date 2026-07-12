@@ -13,7 +13,7 @@
 | Permissions | Camera privacy denied; microphone privacy denied | M | Clear actionable failure, no silent fallback |
 | Storage/power | Low disk space; sleep/resume | M | Recording/recovery behavior is safe and explicit |
 | UI | DPI scaling; keyboard-only navigation; high contrast | M | No clipping, visible focus, accessible state |
-| State model | Valid/invalid lifecycle transitions and events | A | Invalid transitions are rejected without mutation |
-| Logging/settings | Level routing, sensitive-media exclusion, validation | A | Local safe behavior is verified |
+| State model | Every valid/invalid lifecycle transition and event | A | Invalid transitions are rejected without mutation or notification; recording returns to preview |
+| Logging/settings | Level routing, safe fallback, retention, sensitive-media exclusion, validation | A | Local safe behavior is verified without requiring user directories |
 
 Phase 0 has only the state-model automated coverage; every hardware item remains unexecuted until its relevant phase.
