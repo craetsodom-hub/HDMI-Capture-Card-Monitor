@@ -32,8 +32,8 @@
         <Border Grid.Row="1" Style="{StaticResource PreviewSurface}" Margin="0,0,0,20">
             <Grid>
                 <StackPanel MaxWidth="520" Margin="32" HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                    <TextBlock Text="No capture device detected" Style="{StaticResource PreviewMessage}" TextAlignment="Center" />
-                    <TextBlock Text="Connect a compatible USB HDMI capture card and select Refresh."
+                    <TextBlock Text="{Binding PreviewTitle}" Style="{StaticResource PreviewMessage}" TextAlignment="Center" />
+                    <TextBlock Text="{Binding PreviewDescription}"
                                Style="{StaticResource PreviewDescription}" TextAlignment="Center" TextWrapping="Wrap" />
                 </StackPanel>
             </Grid>
@@ -54,11 +54,11 @@
                         <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshDevicesCommand}" IsEnabled="{Binding CanRefreshDevices}" Style="{StaticResource SecondaryButton}" AutomationProperties.Name="Refresh video devices" />
                         <TextBlock Text="DEVICE" Style="{StaticResource FieldLabel}" />
                     </DockPanel>
-                    <ComboBox ItemsSource="{Binding Devices}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedDevice}" IsEnabled="{Binding HasDevices}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Video capture device" />
+                    <ComboBox ItemsSource="{Binding Devices}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedDevice}" Text="{Binding DevicePlaceholder}" IsEditable="True" IsReadOnly="True" IsEnabled="{Binding HasDevices}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Video capture device" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Margin="14,0,0,0">
                     <TextBlock Text="FORMAT" Style="{StaticResource FieldLabel}" />
-                    <ComboBox ItemsSource="{Binding Formats}" DisplayMemberPath="DisplayLabel" SelectedItem="{Binding SelectedFormat}" IsEnabled="{Binding HasFormats}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Native video format" />
+                    <ComboBox ItemsSource="{Binding Formats}" DisplayMemberPath="DisplayLabel" SelectedItem="{Binding SelectedFormat}" Text="{Binding FormatPlaceholder}" IsEditable="True" IsReadOnly="True" IsEnabled="{Binding HasFormats}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Native video format" />
                 </StackPanel>
             </Grid>
             <WrapPanel Grid.Row="1" Margin="0,14,0,0" HorizontalAlignment="Right">

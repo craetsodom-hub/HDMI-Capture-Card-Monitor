@@ -15,29 +15,20 @@ public static class NativeVideoCapabilityFormatter
 
     public static string CreateDisplayLabel(uint width, uint height, uint numerator, uint denominator, string subtype, VideoInterlaceMode interlace)
     {
-        var scan = interlace == VideoInterlaceMode.Interlaced ? "i" : string.Empty;
-        return $"{width} × {height}{scan} · {FormatFrameRate(numerator, denominator)} · {subtype}";
+        var scan = interlace switch { VideoInterlaceMode.Progressive => "p", VideoInterlaceMode.Interlaced => "i", _ => string.Empty };
+        var qualifier = interlace switch { VideoInterlaceMode.Mixed => " · Mixed scan", VideoInterlaceMode.Unknown => " · Scan unknown", _ => string.Empty };
+        return $"{width} × {height}{scan} · {FormatFrameRate(numerator, denominator)} · {subtype}{qualifier}";
     }
 
     public static IReadOnlyList<NativeVideoCapability> SortAndDeduplicate(IEnumerable<NativeVideoCapability> capabilities)
     {
         ArgumentNullException.ThrowIfNull(capabilities);
-
         return capabilities
-            .DistinctBy(capability => new
-            {
-                capability.StreamIndex,
-                capability.NativeMediaTypeIndex,
-                capability.Width,
-                capability.Height,
-                capability.FrameRateNumerator,
-                capability.FrameRateDenominator,
-                capability.MediaSubtype,
-                capability.InterlaceMode
-            })
+            .GroupBy(capability => new { capability.StreamIndex, capability.Width, capability.Height, capability.FrameRateNumerator, capability.FrameRateDenominator, capability.MediaSubtype, capability.InterlaceMode, capability.PixelAspectRatioNumerator, capability.PixelAspectRatioDenominator })
+            .Select(group => group.OrderBy(capability => capability.NativeMediaTypeIndex).First())
             .OrderByDescending(capability => (ulong)capability.Width * capability.Height)
             .ThenByDescending(capability => capability.ExactFrameRate)
-            .ThenBy(capability => capability.InterlaceMode == VideoInterlaceMode.Progressive ? 0 : 1)
+            .ThenBy(capability => capability.InterlaceMode switch { VideoInterlaceMode.Progressive => 0, VideoInterlaceMode.Interlaced => 1, VideoInterlaceMode.Mixed => 2, _ => 3 })
             .ThenBy(capability => capability.SubtypeLabel, StringComparer.OrdinalIgnoreCase)
             .ThenBy(capability => capability.NativeMediaTypeIndex)
             .ToList();

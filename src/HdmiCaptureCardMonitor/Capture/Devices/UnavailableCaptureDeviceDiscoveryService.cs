@@ -7,8 +7,8 @@ public sealed class UnavailableCaptureDeviceDiscoveryService : ICaptureDeviceDis
 {
     private readonly DiscoveryFailure failure;
 
-    public UnavailableCaptureDeviceDiscoveryService(string message) =>
-        failure = new DiscoveryFailure(DiscoveryOperation.MediaFoundationInitialization, null, message);
+    public UnavailableCaptureDeviceDiscoveryService(string message, DiscoveryFailureCategory category = DiscoveryFailureCategory.Unknown, int? hresult = null) =>
+        failure = new DiscoveryFailure(DiscoveryOperation.MediaFoundationInitialization, category, hresult, message);
 
     public Task<DiscoveryResult<IReadOnlyList<CaptureDevice>>> EnumerateVideoDevicesAsync(CancellationToken cancellationToken) =>
         Task.FromResult(DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(failure));

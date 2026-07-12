@@ -1,6 +1,7 @@
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Capture.Devices;
 using HdmiCaptureCardMonitor.Models;
+using HdmiCaptureCardMonitor.Infrastructure;
 using System.Runtime.InteropServices;
 using Windows.Win32;
 using Windows.Win32.Media.MediaFoundation;
@@ -8,37 +9,59 @@ using Windows.Win32.System.Com;
 
 namespace HdmiCaptureCardMonitor.Capture.Interop;
 
-internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDiscoveryService
+internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDiscoveryService
 {
-    private readonly MediaFoundationRuntime runtime;
+    private const int MfENoMoreTypes = unchecked((int)0xC00D36B9);
+    private const int EAccessDenied = unchecked((int)0x80070005);
+    private readonly IApplicationLogger logger;
+    private readonly CancellationTokenSource shutdownCancellation = new();
+    private readonly ManualResetEventSlim workersFinished = new(true);
+    private int activeWorkers;
+    private bool disposed;
+    public bool WorkersSettled { get; private set; } = true;
 
-    public MediaFoundationDeviceDiscoveryService(MediaFoundationRuntime runtime)
+    public MediaFoundationDeviceDiscoveryService(IApplicationLogger logger)
     {
-        this.runtime = runtime;
+        this.logger = logger;
     }
 
     public Task<DiscoveryResult<IReadOnlyList<CaptureDevice>>> EnumerateVideoDevicesAsync(CancellationToken cancellationToken) =>
-        Task.Run(() => EnumerateVideoDevices(cancellationToken), cancellationToken);
+        RunAsync(EnumerateVideoDevices, cancellationToken);
 
     public Task<DiscoveryResult<IReadOnlyList<NativeVideoCapability>>> GetNativeVideoCapabilitiesAsync(CaptureDevice device, CancellationToken cancellationToken) =>
-        Task.Run(() => GetNativeVideoCapabilities(device, cancellationToken), cancellationToken);
+        RunAsync(token => GetNativeVideoCapabilities(device, token), cancellationToken);
 
     public void Dispose()
     {
+        if (disposed) return;
+        disposed = true;
+        shutdownCancellation.Cancel();
+        WorkersSettled = workersFinished.Wait(TimeSpan.FromSeconds(3));
+        if (!WorkersSettled)
+        {
+            logger.Warning("Media Foundation discovery workers did not finish within the three-second shutdown bound; Media Foundation shutdown is skipped to avoid releasing it under an active worker.");
+        }
+        shutdownCancellation.Dispose();
+        workersFinished.Dispose();
     }
 
-    private DiscoveryResult<IReadOnlyList<CaptureDevice>> EnumerateVideoDevices(CancellationToken cancellationToken)
+    private async Task<DiscoveryResult<T>> RunAsync<T>(Func<CancellationToken, DiscoveryResult<T>> operation, CancellationToken cancellationToken)
     {
-        var runtimeResult = runtime.EnsureStarted();
-        if (!runtimeResult.IsSuccess)
-        {
-            return DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(runtimeResult.Failure!);
-        }
+        if (disposed) return DiscoveryResults.Cancelled<T>();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, shutdownCancellation.Token);
+        Interlocked.Increment(ref activeWorkers);
+        workersFinished.Reset();
+        try { return await Task.Run(() => operation(linked.Token), CancellationToken.None); }
+        catch (OperationCanceledException) when (linked.IsCancellationRequested) { return DiscoveryResults.Cancelled<T>(); }
+        finally { if (Interlocked.Decrement(ref activeWorkers) == 0) workersFinished.Set(); }
+    }
 
+    private unsafe DiscoveryResult<IReadOnlyList<CaptureDevice>> EnumerateVideoDevices(CancellationToken cancellationToken)
+    {
         var apartmentResult = PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED);
         if (apartmentResult.Failed)
         {
-            return DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, apartmentResult.Value, "The discovery worker could not initialize COM."));
+            return DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, DiscoveryFailureCategory.ComApartmentFailure, apartmentResult.Value, "The discovery worker could not initialize COM."));
         }
 
         try
@@ -47,7 +70,7 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
             var createResult = PInvoke.MFCreateAttributes(out attributes, 1);
             if (createResult.Failed || attributes is null)
             {
-                return DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, createResult.Value, "Could not create Media Foundation device attributes."));
+                return DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, DiscoveryFailureCategory.Unknown, createResult.Value, "Could not create Media Foundation device attributes."));
             }
 
             try
@@ -59,7 +82,7 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
                 var enumerateResult = PInvoke.MFEnumDeviceSources(attributes, out activates, out count);
                 if (enumerateResult.Failed)
                 {
-                    return DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, enumerateResult.Value, "Windows could not enumerate video capture devices."));
+                    return DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, MapFailure(enumerateResult.Value), enumerateResult.Value, "Windows could not enumerate video capture devices."));
                 }
 
                 var devices = new List<CaptureDevice>();
@@ -115,19 +138,13 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
         }
     }
 
-    private DiscoveryResult<IReadOnlyList<NativeVideoCapability>> GetNativeVideoCapabilities(CaptureDevice device, CancellationToken cancellationToken)
+    private static unsafe DiscoveryResult<IReadOnlyList<NativeVideoCapability>> GetNativeVideoCapabilities(CaptureDevice device, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(device);
-        var runtimeResult = runtime.EnsureStarted();
-        if (!runtimeResult.IsSuccess)
-        {
-            return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(runtimeResult.Failure!);
-        }
-
         var apartmentResult = PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED);
         if (apartmentResult.Failed)
         {
-            return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, apartmentResult.Value, "The discovery worker could not initialize COM."));
+            return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.ComApartmentFailure, apartmentResult.Value, "The discovery worker could not initialize COM."));
         }
 
         try
@@ -136,7 +153,7 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
             var createAttributesResult = PInvoke.MFCreateAttributes(out attributes, 1);
             if (createAttributesResult.Failed || attributes is null)
             {
-                return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.SelectedDeviceActivation, createAttributesResult.Value, "Could not create device activation attributes."));
+                return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.SelectedDeviceActivation, DiscoveryFailureCategory.Unknown, createAttributesResult.Value, "Could not create device activation attributes."));
             }
 
             IMFMediaSource? mediaSource = null;
@@ -148,13 +165,13 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
                 var createSourceResult = PInvoke.MFCreateDeviceSource(attributes, out mediaSource);
                 if (createSourceResult.Failed || mediaSource is null)
                 {
-                    return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.SelectedDeviceActivation, createSourceResult.Value, "The selected video device could not be opened."));
+                    return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.SelectedDeviceActivation, MapFailure(createSourceResult.Value), createSourceResult.Value, "The selected video device could not be opened."));
                 }
 
                 var createReaderResult = PInvoke.MFCreateSourceReaderFromMediaSource(mediaSource, null, out sourceReader);
                 if (createReaderResult.Failed || sourceReader is null)
                 {
-                    return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, createReaderResult.Value, "Could not inspect the selected device formats."));
+                    return DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, MapFailure(createReaderResult.Value), createReaderResult.Value, "Could not inspect the selected device formats."));
                 }
 
                 var capabilities = new List<NativeVideoCapability>();
@@ -172,7 +189,7 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
 
                         capabilities.Add(CreateCapability(mediaType, mediaTypeIndex));
                     }
-                    catch (COMException)
+                    catch (COMException exception) when (exception.HResult == MfENoMoreTypes)
                     {
                         break;
                     }
@@ -182,7 +199,10 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
                     }
                 }
 
-                return DiscoveryResults.Success(NativeVideoCapabilityFormatter.SortAndDeduplicate(capabilities));
+                var normalized = NativeVideoCapabilityFormatter.SortAndDeduplicate(capabilities);
+                return normalized.Count == 0
+                    ? DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.NoUsableFormats, null, "The device exposed no usable native video capabilities."))
+                    : DiscoveryResults.Success(normalized);
             }
             finally
             {
@@ -217,7 +237,7 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
         var denominator = (uint)frameRate;
         var aspectNumerator = (uint)(pixelAspectRatio >> 32);
         var aspectDenominator = (uint)pixelAspectRatio;
-        var interlace = interlaceValue == 2 ? VideoInterlaceMode.Progressive : interlaceValue >= 3 ? VideoInterlaceMode.Interlaced : VideoInterlaceMode.Unknown;
+        var interlace = interlaceValue switch { 2 => VideoInterlaceMode.Progressive, 3 => VideoInterlaceMode.Interlaced, 4 => VideoInterlaceMode.Mixed, _ => VideoInterlaceMode.Unknown };
         var subtypeLabel = GetSubtypeLabel(subtype);
 
         return new NativeVideoCapability(
@@ -244,6 +264,10 @@ internal sealed unsafe class MediaFoundationDeviceDiscoveryService : ICaptureDev
         if (subtype == PInvoke.MFVideoFormat_RGB32) return "RGB32";
         if (subtype == PInvoke.MFVideoFormat_RGB24) return "RGB24";
         if (subtype == PInvoke.MFVideoFormat_H264) return "H.264";
-        return "Other";
+        return $"Other · {subtype.ToString("N")[..8]}";
     }
+
+    private static DiscoveryFailureCategory MapFailure(int hresult) => hresult == EAccessDenied
+        ? DiscoveryFailureCategory.AccessDenied
+        : DiscoveryFailureCategory.Unknown;
 }

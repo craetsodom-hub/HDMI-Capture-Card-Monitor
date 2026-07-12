@@ -4,5 +4,6 @@ public enum VideoInterlaceMode
 {
     Unknown,
     Progressive,
-    Interlaced
+    Interlaced,
+    Mixed
 }

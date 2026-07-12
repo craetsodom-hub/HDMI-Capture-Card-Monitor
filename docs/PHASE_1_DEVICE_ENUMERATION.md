@@ -11,3 +11,12 @@ Device identity is the Media Foundation video symbolic link, held as an opaque I
 For a selected device only, the service recreates activation attributes from the opaque ID, opens a media source and source reader, enumerates native video media types, converts them into immutable managed capabilities, then releases the reader before shutting down/releasing the source and attributes. It never reads a frame, configures RGB output, or leaves a device open. Cancellation and request generations prevent stale UI updates.
 
 Discovery errors retain an operation and safe HRESULT for diagnostics. The UI uses generic actionable text and never exposes symbolic links or COM stack traces. Current local evidence: Media Foundation initialization returned `0x80004001`, so no-device/camera enumeration could not be performed on this machine. No HDMI adapter, USB capture card, or webcam validation is claimed. Preview, audio, snapshots, and recording remain unimplemented.
+# Phase 1 device discovery notes
+
+Media Foundation is initialized once by `App.OnStartup`, after logging is available and before a discovery service is composed. The application uses the generated `PInvoke.MF_VERSION` directly. A failed initialization composes an unavailable discovery service instead of retrying startup for every Refresh.
+
+Discovery workers are cancellation-aware and tracked by the service. Shutdown cancels new work and waits up to three seconds. If a worker is still active, Media Foundation shutdown is deliberately skipped and a warning is logged; this avoids shutting it down underneath native work during process termination.
+
+CsWin32 exposes the device activation array as unmanaged pointers, which are released with `Release` and `CoTaskMemFree`. The remaining generated Media Foundation interfaces are RCWs and are released in reverse acquisition order with `Marshal.ReleaseComObject`; media sources are shut down before release. This boundary is explicit because it follows the generated signatures rather than converting ownership models implicitly.
+
+Phase 1 scans only the source reader's first-video-stream selector. Capabilities retain their native media-type index for diagnostic/stable selection only; it is not part of equivalence. Mandatory malformed metadata is not accepted as a valid format. No preview, audio, recording, or snapshot features are included.

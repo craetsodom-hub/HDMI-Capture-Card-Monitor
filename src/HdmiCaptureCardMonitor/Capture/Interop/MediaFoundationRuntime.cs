@@ -1,58 +1,58 @@
-using Windows.Win32;
-using Windows.Win32.System.Com;
-using Windows.Win32.Media.MediaFoundation;
 using HdmiCaptureCardMonitor.Models;
+using Windows.Win32;
+using Windows.Win32.Media.MediaFoundation;
 
 namespace HdmiCaptureCardMonitor.Capture.Interop;
 
-/// <summary>Owns the process-wide Media Foundation startup/shutdown pair for discovery operations.</summary>
+/// <summary>Composition-root owner of the single process-wide Media Foundation lifetime.</summary>
 public sealed class MediaFoundationRuntime : IDisposable
 {
+    private const int ENotImpl = unchecked((int)0x80004001);
+    private const int MfENotInitialized = unchecked((int)0xC00D36B0);
     private readonly object syncRoot = new();
+    private bool initializeAttempted;
     private bool started;
     private bool disposed;
 
-    public DiscoveryResult<bool> EnsureStarted()
+    public MediaFoundationStartupResult Initialize()
     {
         lock (syncRoot)
         {
-            if (disposed)
+            if (initializeAttempted)
             {
-                return DiscoveryResults.Failed<bool>(new DiscoveryFailure(DiscoveryOperation.MediaFoundationInitialization, null, "The Media Foundation runtime has already been shut down."));
+                return new(started ? MediaFoundationStartupStatus.Success : MediaFoundationStartupStatus.OtherFailure, null);
             }
 
-            if (started)
+            initializeAttempted = true;
+            var result = PInvoke.MFStartup(PInvoke.MF_VERSION, PInvoke.MFSTARTUP_FULL);
+            if (!result.Failed)
             {
-                return DiscoveryResults.Success(true);
+                started = true;
+                return new(MediaFoundationStartupStatus.Success, result.Value);
             }
 
-            var version = (uint)((PInvoke.MF_SDK_VERSION << 16) | PInvoke.MF_API_VERSION);
-            var result = PInvoke.MFStartup(version, PInvoke.MFSTARTUP_FULL);
-            if (result.Failed)
-            {
-                return DiscoveryResults.Failed<bool>(new DiscoveryFailure(DiscoveryOperation.MediaFoundationInitialization, result.Value, "Media Foundation startup failed."));
-            }
-
-            started = true;
-            return DiscoveryResults.Success(true);
+            return new(MapStatus(result.Value), result.Value);
         }
     }
+
+    public bool IsStarted { get { lock (syncRoot) return started; } }
 
     public void Dispose()
     {
         lock (syncRoot)
         {
-            if (disposed)
-            {
-                return;
-            }
-
+            if (disposed) return;
             disposed = true;
-            if (started)
-            {
-                PInvoke.MFShutdown();
-                started = false;
-            }
+            if (!started) return;
+            PInvoke.MFShutdown();
+            started = false;
         }
     }
+
+    private static MediaFoundationStartupStatus MapStatus(int hresult) => hresult switch
+    {
+        ENotImpl => MediaFoundationStartupStatus.MissingMediaComponents,
+        MfENotInitialized => MediaFoundationStartupStatus.UnsupportedStartupVersion,
+        _ => MediaFoundationStartupStatus.OtherFailure
+    };
 }

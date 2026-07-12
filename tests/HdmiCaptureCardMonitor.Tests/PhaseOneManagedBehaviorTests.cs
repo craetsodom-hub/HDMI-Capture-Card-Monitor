@@ -43,6 +43,40 @@ public sealed class PhaseOneManagedBehaviorTests
         Assert.Equal(60000d / 1001d, result[1].ExactFrameRate);
     }
 
+    [Theory]
+    [InlineData(VideoInterlaceMode.Progressive, "1920 × 1080p · 60 fps · MJPEG")]
+    [InlineData(VideoInterlaceMode.Interlaced, "1920 × 1080i · 60 fps · MJPEG")]
+    [InlineData(VideoInterlaceMode.Mixed, "1920 × 1080 · 60 fps · MJPEG · Mixed scan")]
+    [InlineData(VideoInterlaceMode.Unknown, "1920 × 1080 · 60 fps · MJPEG · Scan unknown")]
+    public void FormatsScanModesHonestly(VideoInterlaceMode mode, string expected) =>
+        Assert.Equal(expected, NativeVideoCapabilityFormatter.CreateDisplayLabel(1920, 1080, 60, 1, "MJPEG", mode));
+
+    [Fact]
+    public void DeduplicationKeepsLowestIndexButPreservesPixelAspectRatioDifferences()
+    {
+        var subtype = Guid.NewGuid();
+        var highIndex = CreateCapability(60, 1, "YUY2", 4, subtype) with { PixelAspectRatioNumerator = 1, PixelAspectRatioDenominator = 1 };
+        var lowIndex = CreateCapability(60, 1, "YUY2", 1, subtype) with { PixelAspectRatioNumerator = 1, PixelAspectRatioDenominator = 1 };
+        var differentAspect = CreateCapability(60, 1, "YUY2", 2, subtype) with { PixelAspectRatioNumerator = 4, PixelAspectRatioDenominator = 3 };
+
+        var result = NativeVideoCapabilityFormatter.SortAndDeduplicate([highIndex, differentAspect, lowIndex]);
+
+        Assert.Equal(2, result.Count);
+        Assert.Contains(result, capability => capability.NativeMediaTypeIndex == 1);
+        Assert.Contains(result, capability => capability.PixelAspectRatioNumerator == 4);
+    }
+
+    [Theory]
+    [InlineData(-2147467263, DiscoveryFailureCategory.MissingMediaComponents)]
+    [InlineData(-2147024891, DiscoveryFailureCategory.AccessDenied)]
+    [InlineData(-2147467259, DiscoveryFailureCategory.Unknown)]
+    public void FailureCategoriesAreSafeManagedValues(int hresult, DiscoveryFailureCategory category)
+    {
+        var failure = new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, category, hresult, "safe message");
+        Assert.Equal(category, failure.Category);
+        Assert.Equal($"0x{hresult:X8}", failure.HResultDisplay);
+    }
+
     private static NativeVideoCapability CreateCapability(uint numerator, uint denominator, string subtype, int index, Guid subtypeGuid) =>
         new(0, index, 1920, 1080, numerator, denominator, NativeVideoCapabilityFormatter.CalculateFrameRate(numerator, denominator), subtypeGuid, subtype, VideoInterlaceMode.Progressive, 1, 1, "test");
 }

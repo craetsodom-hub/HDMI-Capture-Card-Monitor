@@ -21,8 +21,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
     public ObservableCollection<NativeVideoCapability> Formats { get; } = [];
-
     [ObservableProperty] private string statusMessage = "Scanning for video devices…";
+    [ObservableProperty] private string previewTitle = "Scanning for video devices…";
+    [ObservableProperty] private string previewDescription = "Please wait while Windows checks available video inputs.";
     [ObservableProperty] private bool isDeviceScanRunning;
     [ObservableProperty] private bool isFormatScanRunning;
     [ObservableProperty] private CaptureDevice? selectedDevice;
@@ -30,15 +31,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public CaptureSessionState SessionState => stateMachine.CurrentState;
     public string SessionStateDisplay => GetSessionStateDisplay(SessionState);
-    public bool HasDevices => Devices.Count > 0;
-    public bool HasFormats => Formats.Count > 0;
+    public bool HasDevices => Devices.Count > 0 && !IsDeviceScanRunning;
+    public bool HasFormats => Formats.Count > 0 && !IsDeviceScanRunning;
     public bool CanRefreshDevices => !IsDeviceScanRunning;
+    public string DevicePlaceholder => IsDeviceScanRunning ? "No device available" : HasDevices ? "Select a capture device" : "No device available";
+    public string FormatPlaceholder => SelectedDevice is null ? "Select a device first" : HasFormats ? "Select a native format" : "No native formats available";
 
-    public MainWindowViewModel(
-        IApplicationLogger logger,
-        string? startupNotice = null,
-        CaptureSessionStateMachine? stateMachine = null,
-        ICaptureDeviceDiscoveryService? discoveryService = null)
+    public MainWindowViewModel(IApplicationLogger logger, string? startupNotice = null, CaptureSessionStateMachine? stateMachine = null, ICaptureDeviceDiscoveryService? discoveryService = null)
     {
         this.logger = logger;
         this.discoveryService = discoveryService ?? new UnavailableCaptureDeviceDiscoveryService("Video device discovery is unavailable.");
@@ -53,134 +52,84 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private async Task RefreshDevicesAsync()
     {
         var generation = Interlocked.Increment(ref deviceScanGeneration);
-        deviceScanCancellation?.Cancel();
-        deviceScanCancellation?.Dispose();
-        deviceScanCancellation = new CancellationTokenSource();
-        formatScanCancellation?.Cancel();
-        Formats.Clear();
-        SelectedFormat = null;
-        IsDeviceScanRunning = true;
-        RefreshDevicesCommand.NotifyCanExecuteChanged();
-        TransitionToEnumerating();
-        StatusMessage = "Scanning for video devices…";
-
+        var previous = Interlocked.Exchange(ref deviceScanCancellation, new CancellationTokenSource());
+        previous?.Cancel(); previous?.Dispose();
+        var localCancellation = deviceScanCancellation!;
+        var token = localCancellation.Token;
+        CancelFormats();
+        Devices.Clear(); Formats.Clear(); SelectedDevice = null; SelectedFormat = null;
+        NotifyDeviceProperties();
+        IsDeviceScanRunning = true; RefreshDevicesCommand.NotifyCanExecuteChanged();
+        TryTransition(CaptureSessionState.Enumerating);
+        StatusMessage = "Scanning for video devices…"; PreviewTitle = StatusMessage; PreviewDescription = "Please wait while Windows checks available video inputs.";
         try
         {
-            var result = await discoveryService.EnumerateVideoDevicesAsync(deviceScanCancellation.Token);
-            if (generation != deviceScanGeneration) return;
+            var result = await discoveryService.EnumerateVideoDevicesAsync(token);
+            if (!IsCurrentDeviceRequest(generation) || disposed) return;
             if (result.IsCancelled) return;
-            if (!result.IsSuccess)
-            {
-                logger.Warning($"Video device discovery failed during {result.Failure!.Operation} ({result.Failure.HResultDisplay}).");
-                StatusMessage = "Video device discovery is unavailable. Select Refresh to try again.";
-                TryTransition(CaptureSessionState.Faulted);
-                return;
-            }
-
-            Devices.Clear();
+            if (!result.IsSuccess) { ApplyFailureMessage(result.Failure!); TryTransition(CaptureSessionState.Faulted); return; }
             foreach (var device in result.Value ?? []) Devices.Add(device);
-            SelectedDevice = null;
-            OnPropertyChanged(nameof(HasDevices));
-            if (Devices.Count == 0)
-            {
-                StatusMessage = "No compatible video capture devices found.";
-                TryTransition(CaptureSessionState.Idle);
-            }
-            else
-            {
-                StatusMessage = "Select a video capture device.";
-                TryTransition(CaptureSessionState.Idle);
-            }
+            NotifyDeviceProperties();
+            if (Devices.Count == 0) { StatusMessage = "No compatible video capture devices found."; PreviewTitle = "No capture device detected"; PreviewDescription = "Connect a compatible USB HDMI capture card and select Refresh."; }
+            else { StatusMessage = "Select a video capture device."; PreviewTitle = "Select a capture device"; PreviewDescription = "Choose a Windows video input below to inspect its supported formats."; }
+            TryTransition(CaptureSessionState.Idle);
         }
-        catch (OperationCanceledException) when (deviceScanCancellation.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception)
         {
+            if (!IsCurrentDeviceRequest(generation) || disposed) return;
             logger.LogError("Device enumeration failed.", exception);
-            StatusMessage = "Video device discovery failed. Select Refresh to try again.";
-            TryTransition(CaptureSessionState.Faulted);
+            ApplyFailureMessage(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, DiscoveryFailureCategory.Unknown, null, "Device enumeration failed.", exception)); TryTransition(CaptureSessionState.Faulted);
         }
-        finally
-        {
-            if (generation == deviceScanGeneration)
-            {
-                IsDeviceScanRunning = false;
-                RefreshDevicesCommand.NotifyCanExecuteChanged();
-            }
-        }
+        finally { if (IsCurrentDeviceRequest(generation)) { IsDeviceScanRunning = false; NotifyDeviceProperties(); RefreshDevicesCommand.NotifyCanExecuteChanged(); } }
     }
 
-    partial void OnSelectedDeviceChanged(CaptureDevice? value)
-    {
-        OnPropertyChanged(nameof(HasFormats));
-        _ = LoadFormatsAsync(value);
-    }
+    partial void OnSelectedDeviceChanged(CaptureDevice? value) { _ = LoadFormatsAsync(value); NotifyDeviceProperties(); }
 
     private async Task LoadFormatsAsync(CaptureDevice? device)
     {
         var generation = Interlocked.Increment(ref formatScanGeneration);
-        formatScanCancellation?.Cancel();
-        formatScanCancellation?.Dispose();
-        Formats.Clear();
-        SelectedFormat = null;
-        OnPropertyChanged(nameof(HasFormats));
-        if (device is null)
-        {
-            if (SessionState == CaptureSessionState.DeviceReady) TryTransition(CaptureSessionState.Idle);
-            return;
-        }
-
-        formatScanCancellation = new CancellationTokenSource();
-        IsFormatScanRunning = true;
-        TransitionToEnumerating();
-        StatusMessage = "Reading supported formats…";
+        CancelFormats(); Formats.Clear(); SelectedFormat = null; NotifyDeviceProperties();
+        if (device is null) { if (SessionState == CaptureSessionState.DeviceReady) TryTransition(CaptureSessionState.Idle); return; }
+        formatScanCancellation = new CancellationTokenSource(); var token = formatScanCancellation.Token;
+        IsFormatScanRunning = true; TryTransition(CaptureSessionState.Enumerating);
+        StatusMessage = "Reading supported formats…"; PreviewTitle = StatusMessage; PreviewDescription = "The selected device is being inspected.";
         try
         {
-            var result = await discoveryService.GetNativeVideoCapabilitiesAsync(device, formatScanCancellation.Token);
-            if (generation != formatScanGeneration || !ReferenceEquals(device, SelectedDevice)) return;
+            var result = await discoveryService.GetNativeVideoCapabilitiesAsync(device, token);
+            if (!IsCurrentFormatRequest(generation, device) || disposed) return;
             if (result.IsCancelled) return;
-            if (!result.IsSuccess)
-            {
-                StatusMessage = "The selected video device is unavailable. Select Refresh or another device.";
-                TryTransition(CaptureSessionState.Faulted);
-                return;
-            }
-
+            if (!result.IsSuccess) { ApplyFailureMessage(result.Failure!); TryTransition(CaptureSessionState.Faulted); return; }
             foreach (var format in result.Value ?? []) Formats.Add(format);
-            OnPropertyChanged(nameof(HasFormats));
-            StatusMessage = Formats.Count == 0 ? "The selected device exposed no usable native video formats." : $"Device ready · {Formats.Count} formats available";
+            NotifyDeviceProperties();
+            if (Formats.Count == 0) { StatusMessage = "The selected device exposed no usable native video formats."; PreviewTitle = "No native formats available"; PreviewDescription = "Select another capture device or refresh the device list."; }
+            else { StatusMessage = $"Device ready · {Formats.Count} formats available"; PreviewTitle = "Capture device ready"; PreviewDescription = "Select a native video format below."; }
             TryTransition(CaptureSessionState.DeviceReady);
         }
-        catch (OperationCanceledException) when (formatScanCancellation.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception)
         {
+            if (!IsCurrentFormatRequest(generation, device) || disposed) return;
             logger.LogError("Native format discovery failed.", exception);
-            StatusMessage = "The selected video device is unavailable. Select Refresh or another device.";
-            TryTransition(CaptureSessionState.Faulted);
+            ApplyFailureMessage(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.Unknown, null, "Native format discovery failed.", exception)); TryTransition(CaptureSessionState.Faulted);
         }
-        finally
-        {
-            if (generation == formatScanGeneration) IsFormatScanRunning = false;
-        }
+        finally { if (IsCurrentFormatRequest(generation, device)) IsFormatScanRunning = false; }
     }
 
     [RelayCommand] private void ShowSettingsInformation() => StatusMessage = "Settings are not available yet.";
     [RelayCommand] private void ShowHelpInformation() => StatusMessage = "Help content is not available yet.";
-
-    public void Dispose()
+    public void Dispose() { if (disposed) return; disposed = true; Interlocked.Increment(ref deviceScanGeneration); Interlocked.Increment(ref formatScanGeneration); CancelFormats(); deviceScanCancellation?.Cancel(); deviceScanCancellation?.Dispose(); stateMachine.StateChanged -= OnStateChanged; }
+    private void CancelFormats() { var previous = Interlocked.Exchange(ref formatScanCancellation, null); previous?.Cancel(); previous?.Dispose(); }
+    private bool IsCurrentDeviceRequest(int generation) => generation == Volatile.Read(ref deviceScanGeneration);
+    private bool IsCurrentFormatRequest(int generation, CaptureDevice device) => generation == Volatile.Read(ref formatScanGeneration) && ReferenceEquals(device, SelectedDevice);
+    private void NotifyDeviceProperties() { OnPropertyChanged(nameof(HasDevices)); OnPropertyChanged(nameof(HasFormats)); OnPropertyChanged(nameof(DevicePlaceholder)); OnPropertyChanged(nameof(FormatPlaceholder)); }
+    private void ApplyFailureMessage(DiscoveryFailure failure)
     {
-        if (disposed) return;
-        disposed = true;
-        deviceScanCancellation?.Cancel();
-        formatScanCancellation?.Cancel();
-        deviceScanCancellation?.Dispose();
-        formatScanCancellation?.Dispose();
+        logger.Warning($"Video discovery failed during {failure.Operation} ({failure.HResultDisplay}).");
+        if (failure.Category == DiscoveryFailureCategory.MissingMediaComponents) { StatusMessage = "Required Windows media components are unavailable."; PreviewTitle = "Video discovery unavailable"; PreviewDescription = "Required Windows media components are unavailable. Install the Media Feature Pack, restart Windows, and select Refresh."; }
+        else { StatusMessage = "Video discovery is unavailable. Select Refresh to try again."; PreviewTitle = "Video discovery unavailable"; PreviewDescription = "Windows could not complete video device discovery. Select Refresh to try again."; }
     }
-
-    private void TransitionToEnumerating() => TryTransition(CaptureSessionState.Enumerating);
     private void TryTransition(CaptureSessionState target) { if (stateMachine.CanTransitionTo(target)) stateMachine.TryTransitionTo(target); }
     private void OnStateChanged(object? sender, CaptureSessionState _) { OnPropertyChanged(nameof(SessionState)); OnPropertyChanged(nameof(SessionStateDisplay)); }
-    private static string GetSessionStateDisplay(CaptureSessionState state) => state switch
-    {
-        CaptureSessionState.Idle => "Idle", CaptureSessionState.Enumerating => "Enumerating", CaptureSessionState.DeviceReady => "Device ready", CaptureSessionState.Starting => "Starting", CaptureSessionState.Previewing => "Previewing", CaptureSessionState.Recording => "Recording", CaptureSessionState.Reconnecting => "Reconnecting", CaptureSessionState.Stopping => "Stopping", _ => "Error"
-    };
+    private static string GetSessionStateDisplay(CaptureSessionState state) => state switch { CaptureSessionState.Idle => "Idle", CaptureSessionState.Enumerating => "Enumerating", CaptureSessionState.DeviceReady => "Device ready", CaptureSessionState.Starting => "Starting", CaptureSessionState.Previewing => "Previewing", CaptureSessionState.Recording => "Recording", CaptureSessionState.Reconnecting => "Reconnecting", CaptureSessionState.Stopping => "Stopping", _ => "Error" };
 }
