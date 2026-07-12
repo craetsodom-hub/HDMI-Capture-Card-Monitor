@@ -17,3 +17,12 @@
 | Logging/settings | Level routing, safe fallback, retention, sensitive-media exclusion, validation | A | Local safe behavior is verified without requiring user directories |
 
 Phase 0 has only the state-model automated coverage; every hardware item remains unexecuted until its relevant phase.
+
+## Phase 1 evidence
+
+| Category | Current evidence | Status |
+|---|---|---|
+| Automated | Managed device/capability normalization, sorting, rational frame-rate formatting | Executed |
+| No-hardware manual | Shell starts, discovery failure is non-fatal, Refresh remains available | Executed on this machine |
+| Webcam/manual video-device | Device list and native formats | Not tested: local Media Foundation initialization returned `0x80004001` |
+| HDMI capture cards | USB 2 UVC adapter and USB 3 higher-bandwidth card | Not tested |

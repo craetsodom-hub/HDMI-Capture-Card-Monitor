@@ -4,7 +4,7 @@
 |---|---|---|---|
 | 0. Foundation | Solution, docs, shell, state, logging | Release build/tests pass; empty state launches honestly | Architecture and scope reviewed |
 | 0.1 Foundation hardening | .NET 10 LTS, CI, state and logging hardening | Warnings-as-errors build/tests pass; PR review complete | CI and scoped hardening reviewed |
-| 1. Enumeration | Device/capability discovery | Lists real devices and formats with cancellation/errors | Manual tests on at least two cards |
+| 1. Enumeration | Device/capability discovery | Lists real devices and native formats with cancellation/errors | Manual tests on at least two capture cards |
 | 2. Preview POC | Primary backend low-latency preview | Real video renders with bounded buffering and measured latency | Disconnect and format tests pass |
 | 3. Premium UI | Production interaction shell | Accessible device/format/status workflow | Keyboard, DPI, contrast review passes |
 | 4. Audio | Local audio monitoring | Stable selected-device audio and explicit permission failures | A/V behavior documented and tested |

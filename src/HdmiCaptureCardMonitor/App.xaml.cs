@@ -1,12 +1,15 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Windows;
+using HdmiCaptureCardMonitor.Capture.Interop;
 using HdmiCaptureCardMonitor.Infrastructure;
 
 namespace HdmiCaptureCardMonitor;
 
-public partial class App : Application
+public partial class App : Application, IDisposable
 {
     private IApplicationLogger? logger;
+    private MediaFoundationRuntime? mediaFoundationRuntime;
+    private MediaFoundationDeviceDiscoveryService? discoveryService;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -14,13 +17,25 @@ public partial class App : Application
         var loggerCreation = ApplicationLoggerFactory.CreateDefault();
         logger = loggerCreation.Logger;
         logger.Information("Application startup completed.");
-        new MainWindow(logger, loggerCreation.StartupNotice).Show();
+        mediaFoundationRuntime = new MediaFoundationRuntime();
+        discoveryService = new MediaFoundationDeviceDiscoveryService(mediaFoundationRuntime);
+        new MainWindow(logger, discoveryService, loggerCreation.StartupNotice).Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         ShutdownLogger(logger);
+        Dispose();
         base.OnExit(e);
+    }
+
+    public void Dispose()
+    {
+        discoveryService?.Dispose();
+        mediaFoundationRuntime?.Dispose();
+        discoveryService = null;
+        mediaFoundationRuntime = null;
+        GC.SuppressFinalize(this);
     }
 
     [SuppressMessage(

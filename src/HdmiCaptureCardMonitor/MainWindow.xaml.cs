@@ -1,4 +1,5 @@
 using System.Windows;
+using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.ViewModels;
 
@@ -6,9 +7,12 @@ namespace HdmiCaptureCardMonitor;
 
 public partial class MainWindow : Window
 {
-    public MainWindow(IApplicationLogger logger, string? startupNotice = null)
+    public MainWindow(IApplicationLogger logger, ICaptureDeviceDiscoveryService discoveryService, string? startupNotice = null)
     {
         InitializeComponent();
-        DataContext = new MainWindowViewModel(logger, startupNotice);
+        var viewModel = new MainWindowViewModel(logger, startupNotice, discoveryService: discoveryService);
+        DataContext = viewModel;
+        Loaded += (_, _) => viewModel.StartInitialDiscovery();
+        Closed += (_, _) => viewModel.Dispose();
     }
 }

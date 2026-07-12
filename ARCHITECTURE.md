@@ -28,4 +28,8 @@ Backends return typed, contextual failures upward; the UI translates them into p
 
 The state model permits `Previewing → Recording → Previewing`; stopping recording must not imply stopping the live preview.
 
+## Phase 1 discovery
+
+Phase 1 uses generated CsWin32 Media Foundation bindings behind `ICaptureDeviceDiscoveryService`. Native work runs synchronously on background COM-initialized workers and returns immutable managed device and capability models. Symbolic links are opaque identities and never appear in UI or logs. The service does not read frames or render video.
+
 Settings will be local, versioned, validated, atomic on write, and Store-compatible. Hardware and native integration stay behind interfaces; state, capability decisions, validation, settings serialization, and error mapping are unit-testable without hardware. Hardware tests remain manual/integration tests in the QA matrix.

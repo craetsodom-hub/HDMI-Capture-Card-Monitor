@@ -1,6 +1,6 @@
 # HDMI Capture Card Monitor
 
-A premium Windows monitor application for USB HDMI capture cards. Phase 0 establishes the WPF solution, architecture boundaries, documentation, visual shell, local logging, and tested capture-session state model. It intentionally does **not** capture, render, record, or simulate video.
+A premium Windows monitor application for USB HDMI capture cards. Phase 1 adds Media Foundation video-device enumeration and selected-device native format discovery; it intentionally does **not** preview, render, record, or simulate video.
 
 ## Build
 
