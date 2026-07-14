@@ -19,7 +19,7 @@ public partial class App : Application, IDisposable
         base.OnStartup(e);
         var loggerCreation = ApplicationLoggerFactory.CreateDefault();
         logger = loggerCreation.Logger;
-        mediaFoundationRuntime = new MediaFoundationRuntime();
+        mediaFoundationRuntime = new MediaFoundationRuntime(logger);
         var startup = mediaFoundationRuntime.Initialize();
         logger.Information($"Media Foundation startup result: {startup.Status} ({FormatHResult(startup.HResult)}).");
         string? startupNotice = loggerCreation.StartupNotice;

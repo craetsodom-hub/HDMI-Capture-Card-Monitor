@@ -62,10 +62,10 @@
                 </StackPanel>
             </Grid>
             <WrapPanel Grid.Row="1" Margin="0,14,0,0" HorizontalAlignment="Right">
-                <Button Content="Start" IsEnabled="False" Style="{StaticResource PrimaryButton}" />
-                <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource SecondaryButton}" />
-                <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource SecondaryButton}" />
-                <Button Content="Record" IsEnabled="False" Style="{StaticResource RecordButton}" />
+                <Button Content="Start" IsEnabled="{Binding CanStartCapture}" Style="{StaticResource PrimaryButton}" />
+                <Button Content="Fullscreen" IsEnabled="{Binding CanFullscreen}" Style="{StaticResource SecondaryButton}" />
+                <Button Content="Snapshot" IsEnabled="{Binding CanTakeSnapshot}" Style="{StaticResource SecondaryButton}" />
+                <Button Content="Record" IsEnabled="{Binding CanRecord}" Style="{StaticResource RecordButton}" />
             </WrapPanel>
         </Grid>
 

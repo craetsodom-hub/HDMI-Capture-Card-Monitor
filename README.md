@@ -7,7 +7,9 @@ A premium Windows monitor application for USB HDMI capture cards. Phase 1 adds M
 ```powershell
 dotnet restore
 dotnet build HDMI-Capture-Card-Monitor.sln --configuration Release -p:Platform=x64
-dotnet test HDMI-Capture-Card-Monitor.sln --configuration Release -p:Platform=x64
+dotnet test HDMI-Capture-Card-Monitor.sln --configuration Release -p:Platform=x64 --filter "Category!=Hardware"
 ```
+
+The ordinary suite explicitly excludes the opt-in physical-hardware test. To rerun that test locally with a connected video device, set `HDMI_CAPTURE_HARDWARE_VALIDATION=1` and use `--filter "Category=Hardware"`.
 
 The app targets stable .NET 10, Windows, x64, and `win-x64`. See `PRODUCT_SPEC.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `QA_MATRIX.md`, and `CODEX_RULES.md` before making changes.

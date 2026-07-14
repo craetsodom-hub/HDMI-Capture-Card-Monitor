@@ -1,22 +1,27 @@
-# Phase 1: Device Enumeration
+# Phase 1: Video Device and Native Format Discovery
 
-Phase 1 uses Media Foundation only because it is the Windows-native capture stack and exposes video-capture device activation and native media types without starting a preview. `Microsoft.Windows.CsWin32` 0.3.298 (MIT) generates the required Windows bindings at build time; it is a private source-generator dependency and is not deployed as a runtime library.
+Phase 1 uses Windows Media Foundation to enumerate video-capture devices and inspect the native video formats of the selected device. It does not read frames or implement preview, audio, recording, snapshots, or fullscreen.
 
-`NativeMethods.txt` requests only COM initialization, memory freeing, Media Foundation startup/shutdown, device-source enumeration/activation, source-reader creation, Media Foundation attributes, and the device/media-type constants used by this phase. Generated output is not committed.
+## Runtime lifetime
 
-Each discovery operation runs synchronously inside a background worker after explicit COM initialization. `MFStartup` is lazily owned by `MediaFoundationRuntime` and balanced by one `MFShutdown` during application shutdown. Successful COM initialization, including `S_FALSE`, is balanced with `CoUninitialize`; `RPC_E_CHANGED_MODE` is reported as a discovery failure.
+`App.OnStartup` creates the logger and then calls `MFStartup(PInvoke.MF_VERSION)` exactly once before composing discovery services. `MediaFoundationRuntime` caches the exact first startup result, including its HRESULT and typed classification, and returns that same result on later initialization calls. A successful startup is balanced by one checked `MFShutdown`; shutdown failures are logged safely.
 
-Device identity is the Media Foundation video symbolic link, held as an opaque ID and never shown or logged. Friendly names are non-unique and are normalized with stable suffixes. Webcams are valid Windows video inputs; the application never guesses that a device is HDMI from its name.
+Startup failures are classified as missing media components (`E_NOTIMPL`), unsupported startup version (`MF_E_BAD_STARTUP_VERSION`), disabled in Safe Mode (`MF_E_DISABLED_IN_SAFEMODE`), or other failure. CsWin32 does not emit the Media Foundation error constants requested from the installed metadata, so the otherwise generated interop surface uses one centralized set of values sourced from the installed Windows SDK `Mferror.h` rather than scattered numeric literals.
 
-For a selected device only, the service recreates activation attributes from the opaque ID, opens a media source and source reader, enumerates native video media types, converts them into immutable managed capabilities, then releases the reader before shutting down/releasing the source and attributes. It never reads a frame, configures RGB output, or leaves a device open. Cancellation and request generations prevent stale UI updates.
+## Discovery and shutdown
 
-Discovery errors retain an operation and safe HRESULT for diagnostics. The UI uses generic actionable text and never exposes symbolic links or COM stack traces. Current local evidence: Media Foundation initialization returned `0x80004001`, so no-device/camera enumeration could not be performed on this machine. No HDMI adapter, USB capture card, or webcam validation is claimed. Preview, audio, snapshots, and recording remain unimplemented.
-# Phase 1 device discovery notes
+Every background discovery operation is registered under a lifecycle lock before it can run. Shutdown stops accepting operations, cancels the shared shutdown token, snapshots active tasks under the lock, and waits outside the lock for at most three seconds. Completed tasks remove themselves through a guaranteed continuation. If a native worker exceeds the bound, its cancellation resources remain alive and `MFShutdown` is skipped rather than being called underneath active Media Foundation work.
 
-Media Foundation is initialized once by `App.OnStartup`, after logging is available and before a discovery service is composed. The application uses the generated `PInvoke.MF_VERSION` directly. A failed initialization composes an unavailable discovery service instead of retrying startup for every Refresh.
+Workers balance every successful COM initialization with `CoUninitialize`. Device activations and the activation array are released exactly once. Friendly names and the hardware-source flag are optional; missing friendly names become `Unnamed video device`, and unavailable hardware-source metadata remains `null`. The symbolic link is a mandatory opaque identifier and is never displayed or logged.
 
-Discovery workers are cancellation-aware and tracked by the service. Shutdown cancels new work and waits up to three seconds. If a worker is still active, Media Foundation shutdown is deliberately skipped and a warning is logged; this avoids shutting it down underneath native work during process termination.
+For format discovery, the source reader enumerates only the first-video-stream selector. `MF_E_NO_MORE_TYPES` is the sole normal end condition. Each type must be video and contain a subtype, non-zero dimensions, and a frame-rate rational with a non-zero denominator. A malformed type is logged without device identifiers and skipped so later valid types remain available.
 
-CsWin32 exposes the device activation array as unmanaged pointers, which are released with `Release` and `CoTaskMemFree`. The remaining generated Media Foundation interfaces are RCWs and are released in reverse acquisition order with `Marshal.ReleaseComObject`; media sources are shut down before release. This boundary is explicit because it follows the generated signatures rather than converting ownership models implicitly.
+Interlace values map as follows: `2` is progressive; `3`, `4`, `5`, and `6` are interlaced; `7` is mixed; all other values are unknown. Pixel aspect ratio and interlace metadata are optional. Exact frame-rate numerators and denominators remain authoritative.
 
-Phase 1 scans only the source reader's first-video-stream selector. Capabilities retain their native media-type index for diagnostic/stable selection only; it is not part of equivalence. Mandatory malformed metadata is not accepted as a valid format. No preview, audio, recording, or snapshot features are included.
+Native cleanup is ordered: release the source reader, call media-source `Shutdown`, release the media source, release attributes, then uninitialize COM. `MF_E_SHUTDOWN` means the source was already shut down and is accepted without warning. Other shutdown HRESULTs are logged while remaining releases continue.
+
+## Validation
+
+The ordinary hardware-independent suite is run with `--filter "Category!=Hardware"`. The physical integration test is explicitly opt-in using `HDMI_CAPTURE_HARDWARE_VALIDATION=1` and `--filter "Category=Hardware"`; it fails with clear instructions if accidentally run without opt-in.
+
+Local hardware validation succeeded with the built-in **HD Camera**: Media Foundation startup succeeded, the device was found, 15 native formats were discovered, repeated capability discovery succeeded, repeated refresh succeeded, and disposal during discovery completed safely. Validation with a physical USB HDMI capture card remains outstanding.

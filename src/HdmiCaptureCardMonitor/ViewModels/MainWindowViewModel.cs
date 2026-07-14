@@ -17,6 +17,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? formatScanCancellation;
     private int deviceScanGeneration;
     private int formatScanGeneration;
+    private Task formatDiscoveryCompletion = Task.CompletedTask;
+    private readonly bool captureActionsAvailable;
     private bool disposed;
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
@@ -36,17 +38,24 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public bool CanRefreshDevices => !IsDeviceScanRunning;
     public string DevicePlaceholder => IsDeviceScanRunning ? "No device available" : HasDevices ? "Select a capture device" : "No device available";
     public string FormatPlaceholder => SelectedDevice is null ? "Select a device first" : HasFormats ? "Select a native format" : "No native formats available";
+    public bool CanStartCapture => captureActionsAvailable;
+    public bool CanFullscreen => captureActionsAvailable;
+    public bool CanTakeSnapshot => captureActionsAvailable;
+    public bool CanRecord => captureActionsAvailable;
+    internal Task FormatDiscoveryCompletion => formatDiscoveryCompletion;
 
     public MainWindowViewModel(IApplicationLogger logger, string? startupNotice = null, CaptureSessionStateMachine? stateMachine = null, ICaptureDeviceDiscoveryService? discoveryService = null)
     {
         this.logger = logger;
         this.discoveryService = discoveryService ?? new UnavailableCaptureDeviceDiscoveryService("Video device discovery is unavailable.");
         this.stateMachine = stateMachine ?? new CaptureSessionStateMachine();
+        captureActionsAvailable = false;
         this.stateMachine.StateChanged += OnStateChanged;
         if (!string.IsNullOrWhiteSpace(startupNotice)) StatusMessage = startupNotice;
     }
 
     public void StartInitialDiscovery() => _ = RefreshDevicesAsync();
+    internal Task RefreshDevicesForTestingAsync() => RefreshDevicesAsync();
 
     [RelayCommand(CanExecute = nameof(CanRefreshDevices))]
     private async Task RefreshDevicesAsync()
@@ -84,7 +93,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         finally { if (IsCurrentDeviceRequest(generation)) { IsDeviceScanRunning = false; NotifyDeviceProperties(); RefreshDevicesCommand.NotifyCanExecuteChanged(); } }
     }
 
-    partial void OnSelectedDeviceChanged(CaptureDevice? value) { _ = LoadFormatsAsync(value); NotifyDeviceProperties(); }
+    partial void OnSelectedDeviceChanged(CaptureDevice? value) { formatDiscoveryCompletion = LoadFormatsAsync(value); NotifyDeviceProperties(); }
 
     private async Task LoadFormatsAsync(CaptureDevice? device)
     {

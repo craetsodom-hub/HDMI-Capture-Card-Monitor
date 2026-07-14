@@ -1,37 +1,49 @@
+using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Models;
 using Windows.Win32;
-using Windows.Win32.Media.MediaFoundation;
 
 namespace HdmiCaptureCardMonitor.Capture.Interop;
 
 /// <summary>Composition-root owner of the single process-wide Media Foundation lifetime.</summary>
 public sealed class MediaFoundationRuntime : IDisposable
 {
-    private const int ENotImpl = unchecked((int)0x80004001);
-    private const int MfENotInitialized = unchecked((int)0xC00D36B0);
+    private static readonly MediaFoundationStartupResult DisposedResult = new(MediaFoundationStartupStatus.OtherFailure, null);
     private readonly object syncRoot = new();
-    private bool initializeAttempted;
+    private readonly Func<int> startup;
+    private readonly Func<int> shutdown;
+    private readonly IApplicationLogger logger;
+    private MediaFoundationStartupResult? cachedResult;
     private bool started;
     private bool disposed;
+
+    public MediaFoundationRuntime(IApplicationLogger? logger = null)
+        : this(
+            () => PInvoke.MFStartup(PInvoke.MF_VERSION, PInvoke.MFSTARTUP_FULL).Value,
+            () => PInvoke.MFShutdown().Value,
+            logger ?? NullApplicationLogger.Instance)
+    {
+    }
+
+    internal MediaFoundationRuntime(Func<int> startup, Func<int> shutdown, IApplicationLogger logger)
+    {
+        this.startup = startup;
+        this.shutdown = shutdown;
+        this.logger = logger;
+    }
 
     public MediaFoundationStartupResult Initialize()
     {
         lock (syncRoot)
         {
-            if (initializeAttempted)
-            {
-                return new(started ? MediaFoundationStartupStatus.Success : MediaFoundationStartupStatus.OtherFailure, null);
-            }
+            if (disposed) return DisposedResult;
+            if (cachedResult is not null) return cachedResult;
 
-            initializeAttempted = true;
-            var result = PInvoke.MFStartup(PInvoke.MF_VERSION, PInvoke.MFSTARTUP_FULL);
-            if (!result.Failed)
-            {
-                started = true;
-                return new(MediaFoundationStartupStatus.Success, result.Value);
-            }
-
-            return new(MapStatus(result.Value), result.Value);
+            var hresult = startup();
+            started = hresult >= 0;
+            cachedResult = started
+                ? new MediaFoundationStartupResult(MediaFoundationStartupStatus.Success, hresult)
+                : new MediaFoundationStartupResult(MediaFoundationStartupClassifier.Classify(hresult), hresult);
+            return cachedResult;
         }
     }
 
@@ -44,15 +56,10 @@ public sealed class MediaFoundationRuntime : IDisposable
             if (disposed) return;
             disposed = true;
             if (!started) return;
-            PInvoke.MFShutdown();
+
+            var hresult = shutdown();
+            if (hresult < 0) logger.Warning($"Media Foundation shutdown reported 0x{hresult:X8}.");
             started = false;
         }
     }
-
-    private static MediaFoundationStartupStatus MapStatus(int hresult) => hresult switch
-    {
-        ENotImpl => MediaFoundationStartupStatus.MissingMediaComponents,
-        MfENotInitialized => MediaFoundationStartupStatus.UnsupportedStartupVersion,
-        _ => MediaFoundationStartupStatus.OtherFailure
-    };
 }

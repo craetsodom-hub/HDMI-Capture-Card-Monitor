@@ -14,10 +14,9 @@ public sealed class HardwareDiscoveryIntegrationTests
     [Trait("Category", "Hardware")]
     public async Task EnumeratesConnectedVideoDevicesAndReleasesThemAfterFormatDiscovery()
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable("HDMI_CAPTURE_HARDWARE_VALIDATION"), "1", StringComparison.Ordinal))
-        {
-            return;
-        }
+        Assert.True(
+            string.Equals(Environment.GetEnvironmentVariable("HDMI_CAPTURE_HARDWARE_VALIDATION"), "1", StringComparison.Ordinal),
+            "Hardware validation was not enabled. Exclude Category=Hardware for ordinary/CI runs, or set HDMI_CAPTURE_HARDWARE_VALIDATION=1 for an explicit local hardware run.");
 
         using var runtime = new MediaFoundationRuntime();
         Assert.True(runtime.Initialize().IsSuccess);

@@ -1,5 +1,6 @@
 using HdmiCaptureCardMonitor.Capture.Devices;
 using HdmiCaptureCardMonitor.Models;
+using HdmiCaptureCardMonitor.Capture.Interop;
 
 namespace HdmiCaptureCardMonitor.Tests;
 
@@ -75,6 +76,25 @@ public sealed class PhaseOneManagedBehaviorTests
         var failure = new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, category, hresult, "safe message");
         Assert.Equal(category, failure.Category);
         Assert.Equal($"0x{hresult:X8}", failure.HResultDisplay);
+    }
+
+    [Theory]
+    [InlineData(2, VideoInterlaceMode.Progressive)]
+    [InlineData(3, VideoInterlaceMode.Interlaced)]
+    [InlineData(4, VideoInterlaceMode.Interlaced)]
+    [InlineData(5, VideoInterlaceMode.Interlaced)]
+    [InlineData(6, VideoInterlaceMode.Interlaced)]
+    [InlineData(7, VideoInterlaceMode.Mixed)]
+    [InlineData(0, VideoInterlaceMode.Unknown)]
+    [InlineData(99, VideoInterlaceMode.Unknown)]
+    public void MapsMediaFoundationInterlaceValuesExactly(uint nativeValue, VideoInterlaceMode expected) =>
+        Assert.Equal(expected, MediaFoundationDeviceDiscoveryService.MapInterlaceMode(nativeValue));
+
+    [Fact]
+    public void OnlyMfShutdownIsRecognizedAsAlreadyShutDownCleanup()
+    {
+        Assert.True(MediaFoundationDeviceDiscoveryService.IsAlreadyShutdownResult(MediaFoundationHResults.Shutdown));
+        Assert.False(MediaFoundationDeviceDiscoveryService.IsAlreadyShutdownResult(unchecked((int)0x80004005)));
     }
 
     private static NativeVideoCapability CreateCapability(uint numerator, uint denominator, string subtype, int index, Guid subtypeGuid) =>
