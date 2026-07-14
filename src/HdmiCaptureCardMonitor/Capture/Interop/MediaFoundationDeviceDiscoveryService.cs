@@ -138,7 +138,7 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
         }
     }
 
-    private static unsafe DiscoveryResult<IReadOnlyList<NativeVideoCapability>> GetNativeVideoCapabilities(CaptureDevice device, CancellationToken cancellationToken)
+    private unsafe DiscoveryResult<IReadOnlyList<NativeVideoCapability>> GetNativeVideoCapabilities(CaptureDevice device, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(device);
         var apartmentResult = PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED);
@@ -209,7 +209,14 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
                 if (sourceReader is not null && Marshal.IsComObject(sourceReader)) Marshal.ReleaseComObject(sourceReader);
                 if (mediaSource is not null)
                 {
-                    mediaSource.Shutdown();
+                    try
+                    {
+                        mediaSource.Shutdown();
+                    }
+                    catch (COMException exception)
+                    {
+                        logger.Warning($"Media source shutdown reported 0x{exception.HResult:X8}; continuing deterministic native cleanup.");
+                    }
                     if (Marshal.IsComObject(mediaSource)) Marshal.ReleaseComObject(mediaSource);
                 }
                 if (Marshal.IsComObject(attributes)) Marshal.ReleaseComObject(attributes);
