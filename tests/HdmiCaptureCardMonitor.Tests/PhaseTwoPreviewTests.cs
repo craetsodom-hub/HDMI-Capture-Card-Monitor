@@ -1,0 +1,795 @@
+using HdmiCaptureCardMonitor.Capture.Abstractions;
+using HdmiCaptureCardMonitor.Capture.Diagnostics;
+using HdmiCaptureCardMonitor.Capture.Interop;
+using HdmiCaptureCardMonitor.Capture.Rendering;
+using HdmiCaptureCardMonitor.Controls;
+using HdmiCaptureCardMonitor.Infrastructure;
+using HdmiCaptureCardMonitor.Models;
+using HdmiCaptureCardMonitor.ViewModels;
+
+namespace HdmiCaptureCardMonitor.Tests;
+
+public sealed class PhaseTwoPreviewTests
+{
+    private static readonly CaptureDevice Camera = new("opaque-camera-link", "HD Camera", "HD Camera", true, CaptureBackend.MediaFoundation);
+    private static readonly NativeVideoCapability Format = new(0, 0, 1280, 720, 30, 1, 30, Guid.NewGuid(), "NV12", VideoInterlaceMode.Progressive, 1, 1, "1280 × 720p · 30 fps · NV12");
+
+    [Theory]
+    [InlineData(1920, 1080, 1280, 720, 0, 0, 1280, 720)]
+    [InlineData(1920, 1080, 1000, 1000, 0, 219, 1000, 562)]
+    [InlineData(720, 1280, 1000, 500, 359, 0, 281, 500)]
+    public void FitRectanglePreservesAspectRatio(int sw, int sh, int tw, int th, int x, int y, int width, int height)
+    {
+        Assert.Equal(new PixelRectangle(x, y, width, height), FitRectangleCalculator.Calculate(sw, sh, tw, th));
+    }
+
+    [Fact]
+    public void FitRectangleReturnsEmptyForZeroSurface() =>
+        Assert.True(FitRectangleCalculator.Calculate(1920, 1080, 0, 720).IsEmpty);
+
+    [Theory]
+    [InlineData(800, 600, 1, 1, 800, 600)]
+    [InlineData(800, 600, 1.5, 1.5, 1200, 900)]
+    [InlineData(0, 600, 1.5, 1.5, 0, 0)]
+    public void DpiConversionUsesPixelDimensions(double width, double height, double sx, double sy, int expectedWidth, int expectedHeight) =>
+        Assert.Equal(new PreviewSurfaceSize(expectedWidth, expectedHeight), DpiPixelSizeConverter.Convert(width, height, sx, sy));
+
+    [Fact]
+    public void ResizeMailboxCoalescesToOneLatestRequest()
+    {
+        var mailbox = new ResizeRequestMailbox();
+        mailbox.Post(new PreviewSurfaceSize(640, 480));
+        mailbox.Post(new PreviewSurfaceSize(1920, 1080));
+        Assert.Equal(1, ResizeRequestMailbox.Capacity);
+        Assert.True(mailbox.TryTake(out var size));
+        Assert.Equal(new PreviewSurfaceSize(1920, 1080), size);
+        Assert.False(mailbox.TryTake(out _));
+    }
+
+    [Fact]
+    public void DiagnosticsCalculateFpsAverageAndP95WithBoundedTimingStorage()
+    {
+        var tracker = new PreviewDiagnosticsTracker("Camera", Format.DisplayLabel);
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        for (var index = 0; index < 300; index++)
+        {
+            var elapsed = TimeSpan.FromMilliseconds(index * 20);
+            tracker.RecordReceived(index * 200_000L, elapsed);
+            tracker.RecordRendered(
+                TimeSpan.FromMilliseconds(index % 10 + 1),
+                TimeSpan.FromMilliseconds(index % 10 + 2),
+                elapsed,
+                start.Add(elapsed));
+        }
+
+        var snapshot = tracker.CreateSnapshot(start.AddSeconds(6));
+        Assert.Equal(256, PreviewDiagnosticsTracker.TimingSampleCapacity);
+        Assert.InRange(snapshot.FramesReceivedPerSecond, 49.9, 50.1);
+        Assert.InRange(snapshot.RenderedFramesPerSecond, 49.9, 50.1);
+        Assert.InRange(snapshot.SampleTimestampFramesPerSecond, 49.9, 50.1);
+        Assert.InRange(snapshot.AverageProcessingMilliseconds, 5.4, 5.7);
+        Assert.InRange(snapshot.P95ProcessingMilliseconds, 9, 10);
+        Assert.InRange(snapshot.AverageSampleReturnToPresentMilliseconds, 6.4, 6.7);
+        Assert.InRange(snapshot.P95SampleReturnToPresentMilliseconds, 10, 11);
+    }
+
+    [Fact]
+    public void CleanupContinuesAfterUnexpectedSourceShutdownAndRendererFailures()
+    {
+        var attempted = new List<string>();
+        var completionSignals = 0;
+        var cancellationDisposals = 0;
+        PreviewSessionCleanup.Execute(
+        [
+            new("reader release", () => attempted.Add("reader")),
+            new("source shutdown", () => throw new InvalidOperationException("shutdown failed")),
+            new("source release", () => attempted.Add("source")),
+            new("reader attributes", () => attempted.Add("reader-attributes")),
+            new("activation attributes", () => attempted.Add("activation-attributes")),
+            new("renderer", () => throw new InvalidOperationException("renderer failed")),
+            new("CoUninitialize", () => attempted.Add("coinitialize"))
+        ],
+        (_, _) => throw new InvalidOperationException("logger failed"),
+        () => cancellationDisposals++,
+        () => completionSignals++);
+
+        Assert.Equal(["reader", "source", "reader-attributes", "activation-attributes", "coinitialize"], attempted);
+        Assert.Equal(1, cancellationDisposals);
+        Assert.Equal(1, completionSignals);
+    }
+
+    [Fact]
+    public void MfAlreadyShutdownIsAcceptedAndLaterCleanupStillRuns()
+    {
+        var sourceReleased = false;
+        PreviewSessionCleanup.Execute(
+        [
+            new(
+                "source shutdown",
+                () => throw new TestCleanupException(MediaFoundationHResults.Shutdown),
+                exception => exception.HResult == MediaFoundationHResults.Shutdown),
+            new("source release", () => sourceReleased = true)
+        ],
+        (_, _) => Assert.Fail("MF_E_SHUTDOWN must not be reported"),
+        () => { },
+        () => { });
+
+        Assert.True(sourceReleased);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(5)]
+    public void PartialNativeConstructionReleasesEveryAcquiredStageInReverse(int failureStage)
+    {
+        var released = new List<int>();
+        using (var ownership = new NativeConstructionScope())
+        {
+            for (var stage = 1; stage <= failureStage; stage++)
+            {
+                var ownedStage = stage;
+                ownership.Own(new object(), _ => released.Add(ownedStage));
+            }
+        }
+
+        Assert.Equal(Enumerable.Range(1, failureStage).Reverse(), released);
+    }
+
+    [Fact]
+    public void CommittedNativeConstructionDoesNotReleaseTransferredOwnership()
+    {
+        var releases = 0;
+        using (var ownership = new NativeConstructionScope())
+        {
+            ownership.Own(new object(), _ => releases++);
+            ownership.Commit();
+        }
+        Assert.Equal(0, releases);
+    }
+
+    [Fact]
+    public void ZeroSizedSurfaceWithContinuingSamplesDoesNotStall()
+    {
+        var result = PreviewWatchdogPolicy.Evaluate(
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromMilliseconds(20),
+            TimeSpan.FromSeconds(9),
+            surfacePresentable: false,
+            firstFramePresented: true,
+            TimeSpan.FromSeconds(3));
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void RestoreAfterFiveSecondsReceivesFreshPresentationGrace()
+    {
+        var result = PreviewWatchdogPolicy.Evaluate(
+            TimeSpan.FromSeconds(8),
+            TimeSpan.FromMilliseconds(20),
+            TimeSpan.Zero,
+            surfacePresentable: true,
+            firstFramePresented: true,
+            TimeSpan.FromSeconds(3));
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void GenuineNoSampleBecomesInputStall() =>
+        Assert.Equal(
+            PreviewFailureCategory.PreviewStalled,
+            PreviewWatchdogPolicy.Evaluate(
+                TimeSpan.FromSeconds(8),
+                TimeSpan.FromSeconds(4),
+                TimeSpan.FromMilliseconds(20),
+                true,
+                true,
+                TimeSpan.FromSeconds(3)));
+
+    [Fact]
+    public void VisibleSamplesWithoutPresentBecomePresentationFailure() =>
+        Assert.Equal(
+            PreviewFailureCategory.PresentationFailure,
+            PreviewWatchdogPolicy.Evaluate(
+                TimeSpan.FromSeconds(8),
+                TimeSpan.FromMilliseconds(20),
+                TimeSpan.FromSeconds(4),
+                true,
+                true,
+                TimeSpan.FromSeconds(3)));
+
+    [Fact]
+    public void StartupWithoutSamplesBecomesStartupTimeout() =>
+        Assert.Equal(
+            PreviewFailureCategory.StartupTimeout,
+            PreviewWatchdogPolicy.Evaluate(
+                TimeSpan.FromSeconds(4),
+                null,
+                TimeSpan.FromSeconds(4),
+                true,
+                false,
+                TimeSpan.FromSeconds(3)));
+
+    [Fact]
+    public void ChildWindowIsCreatedWithoutVisibleStyle() =>
+        Assert.Equal(0u, (uint)(HwndPreviewSurface.ChildWindowStyle & Windows.Win32.UI.WindowsAndMessaging.WINDOW_STYLE.WS_VISIBLE));
+
+    [Fact]
+    public void DiagnosticPublicationIsThrottledToTwicePerSecond()
+    {
+        var tracker = new PreviewDiagnosticsTracker("Camera", Format.DisplayLabel);
+        var now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Assert.True(tracker.TryCreateThrottledSnapshot(now, out _));
+        Assert.False(tracker.TryCreateThrottledSnapshot(now.AddMilliseconds(499), out _));
+        Assert.True(tracker.TryCreateThrottledSnapshot(now.AddMilliseconds(500), out _));
+    }
+
+    [Theory]
+    [InlineData(unchecked((int)0x80070005), PreviewFailureCategory.AccessDenied)]
+    [InlineData(unchecked((int)0x80070020), PreviewFailureCategory.DeviceBusy)]
+    [InlineData(unchecked((int)0x887A0005), PreviewFailureCategory.DeviceRemoved)]
+    [InlineData(unchecked((int)0x887A0007), PreviewFailureCategory.DeviceRemoved)]
+    [InlineData(unchecked((int)0xC00D5212), PreviewFailureCategory.DecoderUnavailable)]
+    [InlineData(unchecked((int)0xC00D36B4), PreviewFailureCategory.UnsupportedPreviewFormat)]
+    [InlineData(unchecked((int)0x80004005), PreviewFailureCategory.DeviceUnavailable)]
+    public void NativeFailuresMapToTypedCategories(int hresult, PreviewFailureCategory expected) =>
+        Assert.Equal(expected, PreviewFailureMapper.Map(hresult, PreviewFailureCategory.DeviceUnavailable));
+
+    [Fact]
+    public void PreviewHasNoApplicationFrameQueue() => Assert.Equal(0, D3D11PreviewRenderer.ApplicationFrameQueueCapacity);
+
+    [Fact]
+    public async Task EligibilityRequiresDeviceFormatReadyStateAndSurface()
+    {
+        var (viewModel, _, surface) = Create();
+        Assert.False(viewModel.CanStartCapture);
+        await MakeReadyAsync(viewModel);
+        Assert.True(surface.IsAvailable);
+        Assert.True(viewModel.CanStartCapture);
+    }
+
+    [Fact]
+    public async Task MissingFormatAndScanningDisableStart()
+    {
+        var (viewModel, _, _) = Create();
+        viewModel.Devices.Add(Camera);
+        Assert.False(viewModel.CanStartCapture);
+        var refresh = viewModel.RefreshDevicesForTestingAsync();
+        Assert.False(viewModel.CanStartCapture);
+        await refresh;
+    }
+
+    [Fact]
+    public async Task SuccessfulStartWaitsForFirstFrameBeforePreviewing()
+    {
+        var (viewModel, preview, surface) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        Assert.Equal(CaptureSessionState.Starting, viewModel.SessionState);
+        Assert.True(viewModel.IsPreviewMessageVisible);
+        Assert.False(surface.IsVideoVisible);
+        Assert.True(surface.IsSurfaceActive);
+        preview.CompleteStart();
+        await start;
+        Assert.Equal(CaptureSessionState.Starting, viewModel.SessionState);
+        preview.RaiseFirstFrame();
+        Assert.Equal(CaptureSessionState.Previewing, viewModel.SessionState);
+        Assert.False(viewModel.IsPreviewMessageVisible);
+        Assert.True(surface.IsVideoVisible);
+    }
+
+    [Fact]
+    public async Task StopReturnsToReadyAndRetainsSelections()
+    {
+        var (viewModel, preview, surface) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        var stop = viewModel.StopPreviewForTestingAsync();
+        Assert.Equal(CaptureSessionState.Stopping, viewModel.SessionState);
+        preview.CompleteStop();
+        await stop;
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.Equal(Camera, viewModel.SelectedDevice);
+        Assert.Equal(Format, viewModel.SelectedFormat);
+        Assert.False(surface.IsVideoVisible);
+        Assert.False(surface.IsSurfaceActive);
+        Assert.Equal("Preview stopped", viewModel.PreviewTitle);
+    }
+
+    [Fact]
+    public async Task StartFailureFaultsAndKeepsSurfaceHidden()
+    {
+        var (viewModel, preview, surface) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStartFailure(PreviewFailureCategory.DecoderUnavailable);
+        await start;
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.True(viewModel.CanStartCapture);
+        Assert.False(surface.IsVideoVisible);
+        Assert.False(surface.IsSurfaceActive);
+        Assert.Contains("decode", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CancelledStartReturnsToReadyWithoutFaulting()
+    {
+        var (viewModel, preview, surface) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStartCancelled();
+        await start;
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.False(surface.IsVideoVisible);
+        Assert.Equal("Preview stopped", viewModel.PreviewTitle);
+    }
+
+    [Fact]
+    public async Task RuntimeFailureFaultsAndHidesSurface()
+    {
+        var (viewModel, preview, surface) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        preview.RaiseFailure(PreviewFailureCategory.PreviewStalled);
+        Assert.Equal(CaptureSessionState.Faulted, viewModel.SessionState);
+        Assert.False(surface.IsVideoVisible);
+        Assert.Equal("Video input stalled", viewModel.PreviewTitle);
+    }
+
+    [Fact]
+    public async Task StartupTimeoutIsAControlledNonHresultFailure()
+    {
+        var (viewModel, preview, surface) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStart();
+        await start;
+        preview.CompleteStop();
+        preview.RaiseFailure(PreviewFailureCategory.StartupTimeout);
+        await WaitUntilAsync(() => viewModel.SessionState == CaptureSessionState.DeviceReady);
+        Assert.Contains("timed out", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.False(surface.IsVideoVisible);
+        Assert.False(surface.IsSurfaceActive);
+        Assert.DoesNotContain("0x", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(PreviewFailureCategory.D3DInitializationFailure, "GPU preview")]
+    [InlineData(PreviewFailureCategory.DeviceRemoved, "graphics device")]
+    [InlineData(PreviewFailureCategory.UnsupportedGpuBuffer, "GPU preview path")]
+    public async Task TypedStartFailuresProduceSafeActionableStatus(PreviewFailureCategory category, string expectedText)
+    {
+        var (viewModel, preview, _) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStartFailure(category);
+        await start;
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.True(viewModel.CanStartCapture);
+        Assert.Contains(expectedText, viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("0x", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StopDuringStartingMakesOldStartupCompletionStale()
+    {
+        var (viewModel, preview, _) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        var stop = viewModel.StopPreviewForTestingAsync();
+        preview.CompleteStop();
+        await stop;
+        preview.CompleteStart();
+        await start;
+        preview.RaiseFirstFrame();
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+    }
+
+    [Fact]
+    public async Task DoubleStartCreatesOneSession()
+    {
+        var (viewModel, preview, _) = Create();
+        await MakeReadyAsync(viewModel);
+        var first = viewModel.StartPreviewForTestingAsync();
+        await viewModel.StartPreviewForTestingAsync();
+        Assert.Equal(1, preview.StartCalls);
+        preview.CompleteStart();
+        await first;
+    }
+
+    [Fact]
+    public async Task RepeatedStopCreatesOneStopOperation()
+    {
+        var (viewModel, preview, _) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        var first = viewModel.StopPreviewForTestingAsync();
+        var second = viewModel.StopPreviewForTestingAsync();
+        preview.CompleteStop();
+        await Task.WhenAll(first, second);
+        Assert.Equal(1, preview.StopCalls);
+    }
+
+    [Fact]
+    public async Task ActivePreviewDisablesSelectorsRefreshAndLaterFeatures()
+    {
+        var (viewModel, preview, _) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        Assert.False(viewModel.HasDevices);
+        Assert.False(viewModel.HasFormats);
+        Assert.False(viewModel.CanRefreshDevices);
+        Assert.Equal("Stop", viewModel.StartStopText);
+        Assert.False(viewModel.CanFullscreen);
+        Assert.False(viewModel.CanTakeSnapshot);
+        Assert.False(viewModel.CanRecord);
+    }
+
+    [Fact]
+    public async Task DiagnosticsUpdateStatusWithoutExposingLatencyClaim()
+    {
+        var (viewModel, preview, _) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        preview.RaiseDiagnostics(29.8, 1.2, 2.4);
+        Assert.Contains("29.8 rendered fps", viewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.DoesNotContain("latency", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1.2, viewModel.CurrentPreviewDiagnostics!.AverageProcessingMilliseconds);
+    }
+
+    [Fact]
+    public async Task DisposalDuringStartingStopsAndUnsubscribesOnce()
+    {
+        var (viewModel, preview, _) = Create(immediateStop: true);
+        await MakeReadyAsync(viewModel);
+        _ = viewModel.StartPreviewForTestingAsync();
+        viewModel.Dispose();
+        preview.CompleteStart();
+        Assert.Equal(1, preview.StopCalls);
+        Assert.Equal(1, preview.FirstFrameRemoveCalls);
+        Assert.Equal(1, preview.DiagnosticsRemoveCalls);
+        Assert.Equal(1, preview.FailureRemoveCalls);
+    }
+
+    [Fact]
+    public async Task StaleEventsAfterDisposalDoNotMutateUi()
+    {
+        var (viewModel, preview, surface) = Create(immediateStop: true);
+        await StartAndPresentAsync(viewModel, preview);
+        viewModel.Dispose();
+        var title = viewModel.PreviewTitle;
+        preview.RaiseFailure(PreviewFailureCategory.DeviceRemoved);
+        Assert.Equal(title, viewModel.PreviewTitle);
+        Assert.False(surface.IsVideoVisible);
+    }
+
+    [Fact]
+    public async Task StartupFailureCleanupAllowsRetryWithSameSelection()
+    {
+        var (viewModel, preview, surface) = Create();
+        await MakeReadyAsync(viewModel);
+        var firstStart = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStartFailure(PreviewFailureCategory.DecoderUnavailable);
+        await firstStart;
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.True(viewModel.CanStartCapture);
+
+        var retry = viewModel.StartPreviewForTestingAsync();
+        Assert.False(surface.IsVideoVisible);
+        preview.CompleteStart();
+        await retry;
+        preview.RaiseFirstFrame();
+        Assert.Equal(CaptureSessionState.Previewing, viewModel.SessionState);
+    }
+
+    [Fact]
+    public async Task RuntimeFailureCleanupAllowsRetry()
+    {
+        var (viewModel, preview, _) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        preview.RaiseFailure(PreviewFailureCategory.PreviewStalled);
+        preview.CompleteStop();
+        await WaitUntilAsync(() => viewModel.SessionState == CaptureSessionState.DeviceReady);
+        Assert.True(viewModel.CanStartCapture);
+
+        var retry = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStart();
+        await retry;
+        preview.RaiseFirstFrame();
+        Assert.Equal(CaptureSessionState.Previewing, viewModel.SessionState);
+    }
+
+    [Fact]
+    public async Task DecoderFailureThenAnotherFormatEnablesStart()
+    {
+        var (viewModel, preview, _) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStartFailure(PreviewFailureCategory.DecoderUnavailable);
+        await start;
+        viewModel.SelectedFormat = Format with { NativeMediaTypeIndex = 1, SubtypeLabel = "MJPEG" };
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.True(viewModel.CanStartCapture);
+    }
+
+    [Fact]
+    public async Task StaleFailureAfterRefreshCannotOverwriteNewerMessage()
+    {
+        var (viewModel, preview, _) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        var staleSession = preview.CurrentSessionId;
+        var stop = viewModel.StopPreviewForTestingAsync();
+        preview.CompleteStop();
+        await stop;
+        await viewModel.RefreshDevicesForTestingAsync();
+        var message = viewModel.StatusMessage;
+        preview.RaiseFailure(staleSession, PreviewFailureCategory.DeviceRemoved);
+        Assert.Equal(message, viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task StaleFailureCannotFaultNewerPreview()
+    {
+        var (viewModel, preview, _) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        var staleSession = preview.CurrentSessionId;
+        var stop = viewModel.StopPreviewForTestingAsync();
+        preview.CompleteStop();
+        await stop;
+
+        var retry = viewModel.StartPreviewForTestingAsync();
+        Assert.Equal(CaptureSessionState.Starting, viewModel.SessionState);
+        preview.RaiseFailure(staleSession, PreviewFailureCategory.DeviceRemoved);
+        Assert.Equal(CaptureSessionState.Starting, viewModel.SessionState);
+        preview.CompleteStart();
+        await retry;
+    }
+
+    [Fact]
+    public async Task StaleFailureFromStoppedStartingSessionCannotFaultNewerStart()
+    {
+        var (viewModel, preview, _) = Create();
+        await MakeReadyAsync(viewModel);
+        _ = viewModel.StartPreviewForTestingAsync();
+        var stoppedStartingSession = preview.CurrentSessionId;
+        var stop = viewModel.StopPreviewForTestingAsync();
+        preview.CompleteStop();
+        await stop;
+
+        var retry = viewModel.StartPreviewForTestingAsync();
+        preview.RaiseFailure(stoppedStartingSession, PreviewFailureCategory.DeviceRemoved);
+        Assert.Equal(CaptureSessionState.Starting, viewModel.SessionState);
+        preview.CompleteStart();
+        await retry;
+    }
+
+    [Fact]
+    public async Task CleanupTimeoutPreventsRetry()
+    {
+        var (viewModel, preview, _) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        preview.RaiseFailure(PreviewFailureCategory.PreviewStalled);
+        preview.CompleteStop(PreviewStopResult.Timeout(new PreviewFailure(PreviewFailureCategory.ShutdownTimeout, "Timed out")));
+        await WaitUntilAsync(() => viewModel.SessionState == CaptureSessionState.Faulted);
+        Assert.True(preview.IsActive);
+        Assert.False(viewModel.CanStartCapture);
+    }
+
+    [Fact]
+    public async Task ZeroSizedSurfacePreventsStartup()
+    {
+        var (viewModel, preview, surface) = Create();
+        await MakeReadyAsync(viewModel);
+        surface.SetPresentable(false);
+        await viewModel.StartPreviewForTestingAsync();
+        Assert.Equal(0, preview.StartCalls);
+        Assert.False(viewModel.CanStartCapture);
+    }
+
+    [Fact]
+    public async Task StartStopStartNeverExposesOldFrameBeforeNewFirstFrame()
+    {
+        var (viewModel, preview, surface) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        var stop = viewModel.StopPreviewForTestingAsync();
+        preview.CompleteStop();
+        await stop;
+        Assert.False(surface.IsVideoVisible);
+
+        var restart = viewModel.StartPreviewForTestingAsync();
+        Assert.True(surface.IsSurfaceActive);
+        Assert.False(surface.IsVideoVisible);
+        preview.CompleteStart();
+        await restart;
+        Assert.True(viewModel.IsPreviewMessageVisible);
+        Assert.False(surface.IsVideoVisible);
+    }
+
+    [Fact]
+    public async Task WindowClosingStopsPreviewBeforeSurfaceCanBeDestroyed()
+    {
+        var (viewModel, preview, surface) = Create(immediateStop: true);
+        await StartAndPresentAsync(viewModel, preview);
+        viewModel.Dispose();
+        Assert.True(preview.SurfaceWasAvailableDuringStop);
+        Assert.True(surface.IsAvailable);
+    }
+
+    private static async Task StartAndPresentAsync(MainWindowViewModel viewModel, FakePreviewService preview)
+    {
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        preview.CompleteStart();
+        await start;
+        preview.RaiseFirstFrame();
+    }
+
+    private static async Task MakeReadyAsync(MainWindowViewModel viewModel)
+    {
+        viewModel.Devices.Add(Camera);
+        viewModel.SelectedDevice = Camera;
+        await viewModel.FormatDiscoveryCompletion;
+        viewModel.SelectedFormat = Format;
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate)
+    {
+        for (var attempt = 0; attempt < 100 && !predicate(); attempt++) await Task.Yield();
+        Assert.True(predicate());
+    }
+
+    private static (MainWindowViewModel ViewModel, FakePreviewService Preview, FakeSurface Surface) Create(bool immediateStop = false)
+    {
+        var preview = new FakePreviewService(immediateStop);
+        var surface = new FakeSurface();
+        var viewModel = new MainWindowViewModel(
+            NullApplicationLogger.Instance,
+            discoveryService: new ImmediateDiscoveryService(),
+            previewService: preview,
+            previewSurface: surface,
+            synchronizationContext: new ImmediateSynchronizationContext());
+        return (viewModel, preview, surface);
+    }
+
+    private sealed class ImmediateDiscoveryService : ICaptureDeviceDiscoveryService
+    {
+        public Task<DiscoveryResult<IReadOnlyList<CaptureDevice>>> EnumerateVideoDevicesAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(DiscoveryResults.Success<IReadOnlyList<CaptureDevice>>([Camera]));
+
+        public Task<DiscoveryResult<IReadOnlyList<NativeVideoCapability>>> GetNativeVideoCapabilitiesAsync(CaptureDevice device, CancellationToken cancellationToken) =>
+            Task.FromResult(DiscoveryResults.Success<IReadOnlyList<NativeVideoCapability>>([Format]));
+
+        public void Dispose() { }
+    }
+
+    private sealed class FakeSurface : IPreviewSurface
+    {
+        public nint Handle => 42;
+        public PreviewSurfaceSize PixelSize { get; private set; } = new(1280, 720);
+        public bool IsAvailable { get; set; } = true;
+        public bool IsPresentable { get; private set; } = true;
+        public bool IsVideoVisible { get; private set; }
+        public bool IsSurfaceActive { get; private set; }
+        public event EventHandler<PreviewSurfaceSize>? PixelSizeChanged { add { } remove { } }
+        public event EventHandler? AvailabilityChanged { add { } remove { } }
+        public event EventHandler? PresentabilityChanged;
+        public void SetSurfaceActive(bool active) => IsSurfaceActive = active;
+        public void SetVideoVisible(bool visible) => IsVideoVisible = visible;
+        public void SetPresentable(bool presentable)
+        {
+            IsPresentable = presentable;
+            PixelSize = presentable ? new PreviewSurfaceSize(1280, 720) : default;
+            PresentabilityChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private sealed class FakePreviewService : ICapturePreviewService
+    {
+        private TaskCompletionSource<PreviewStartResult> start = NewStartCompletion();
+        private TaskCompletionSource<PreviewStopResult> stop = NewStopCompletion();
+        private EventHandler<PreviewSessionEventArgs>? firstFrame;
+        private EventHandler<PreviewDiagnosticsEventArgs>? diagnostics;
+        private EventHandler<PreviewFailureEventArgs>? failure;
+        private EventHandler? isActiveChanged;
+        private Guid sessionId = Guid.NewGuid();
+        private readonly bool immediateStop;
+        private IPreviewSurface? activeSurface;
+
+        public FakePreviewService(bool immediateStop)
+        {
+            this.immediateStop = immediateStop;
+            if (immediateStop) stop.TrySetResult(PreviewStopResult.Stopped);
+        }
+
+        public bool IsActive { get; private set; }
+        public int StartCalls { get; private set; }
+        public int StopCalls { get; private set; }
+        public int FirstFrameRemoveCalls { get; private set; }
+        public int DiagnosticsRemoveCalls { get; private set; }
+        public int FailureRemoveCalls { get; private set; }
+        public Guid CurrentSessionId => sessionId;
+        public bool SurfaceWasAvailableDuringStop { get; private set; }
+
+        public event EventHandler? IsActiveChanged
+        {
+            add => isActiveChanged += value;
+            remove => isActiveChanged -= value;
+        }
+
+        public event EventHandler<PreviewSessionEventArgs>? FirstFramePresented
+        {
+            add => firstFrame += value;
+            remove { firstFrame -= value; FirstFrameRemoveCalls++; }
+        }
+
+        public event EventHandler<PreviewDiagnosticsEventArgs>? DiagnosticsUpdated
+        {
+            add => diagnostics += value;
+            remove { diagnostics -= value; DiagnosticsRemoveCalls++; }
+        }
+
+        public event EventHandler<PreviewFailureEventArgs>? PreviewFailed
+        {
+            add => failure += value;
+            remove { failure -= value; FailureRemoveCalls++; }
+        }
+
+        public Task<PreviewStartResult> StartAsync(PreviewStartRequest request)
+        {
+            StartCalls++;
+            sessionId = Guid.NewGuid();
+            start = NewStartCompletion();
+            stop = NewStopCompletion();
+            if (immediateStop) stop.TrySetResult(PreviewStopResult.Stopped);
+            activeSurface = request.Surface;
+            IsActive = true;
+            isActiveChanged?.Invoke(this, EventArgs.Empty);
+            return start.Task;
+        }
+
+        public async Task<PreviewStopResult> StopAsync(CancellationToken cancellationToken = default)
+        {
+            StopCalls++;
+            SurfaceWasAvailableDuringStop = activeSurface?.IsAvailable == true;
+            var result = await stop.Task;
+            if (!result.TimedOut)
+            {
+                IsActive = false;
+                isActiveChanged?.Invoke(this, EventArgs.Empty);
+            }
+            return result;
+        }
+
+        public void CompleteStart() => start.TrySetResult(PreviewStartResult.Started(sessionId));
+        public void CompleteStartCancelled()
+        {
+            IsActive = false;
+            isActiveChanged?.Invoke(this, EventArgs.Empty);
+            start.TrySetResult(PreviewStartResult.Cancelled(sessionId));
+        }
+        public void CompleteStartFailure(PreviewFailureCategory category)
+        {
+            if (category != PreviewFailureCategory.ShutdownTimeout)
+            {
+                IsActive = false;
+                isActiveChanged?.Invoke(this, EventArgs.Empty);
+            }
+            start.TrySetResult(PreviewStartResult.Failed(sessionId, new PreviewFailure(category, "Safe failure")));
+        }
+        public void CompleteStop(PreviewStopResult? result = null) => stop.TrySetResult(result ?? PreviewStopResult.Stopped);
+        public void RaiseFirstFrame() => firstFrame?.Invoke(this, new PreviewSessionEventArgs(sessionId));
+        public void RaiseFailure(PreviewFailureCategory category) => failure?.Invoke(this, new PreviewFailureEventArgs(sessionId, new PreviewFailure(category, "Safe runtime failure")));
+        public void RaiseFailure(Guid staleSessionId, PreviewFailureCategory category) => failure?.Invoke(this, new PreviewFailureEventArgs(staleSessionId, new PreviewFailure(category, "Stale failure")));
+        public void RaiseDiagnostics(double fps, double average, double p95) => diagnostics?.Invoke(this, new PreviewDiagnosticsEventArgs(sessionId, PreviewDiagnostics.Empty(Camera.DisplayName, Format.DisplayLabel) with { FramesReceivedPerSecond = fps, RenderedFramesPerSecond = fps, AverageProcessingMilliseconds = average, P95ProcessingMilliseconds = p95 }));
+        public void Dispose() { }
+
+        private static TaskCompletionSource<PreviewStartResult> NewStartCompletion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private static TaskCompletionSource<PreviewStopResult> NewStopCompletion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class ImmediateSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state) => d(state);
+    }
+
+    private sealed class TestCleanupException : Exception
+    {
+        public TestCleanupException(int hresult) => HResult = hresult;
+    }
+}

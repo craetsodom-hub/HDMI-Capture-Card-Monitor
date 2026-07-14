@@ -1,6 +1,8 @@
 # HDMI Capture Card Monitor
 
-A premium Windows monitor application for USB HDMI capture cards. Phase 1 adds Media Foundation video-device enumeration and selected-device native format discovery; it intentionally does **not** preview, render, record, or simulate video.
+A premium Windows monitor application for USB HDMI capture cards. Phase 2A adds a controlled proof-of-concept live preview: the selected real device and exact native mode feed a synchronous Media Foundation reader on a dedicated MTA thread, then GPU-backed NV12 surfaces are converted, Fit-scaled, and presented through Direct3D 11 to the in-window preview HWND.
+
+This phase is deliberately limited. Audio, recording, snapshots, fullscreen, reconnect, DirectShow fallback, and HDMI-specific compatibility claims are not implemented. The built-in HD Camera validates the generic Media Foundation UVC path; a physical USB HDMI capture card remains mandatory before release.
 
 ## Build
 
@@ -10,6 +12,6 @@ dotnet build HDMI-Capture-Card-Monitor.sln --configuration Release -p:Platform=x
 dotnet test HDMI-Capture-Card-Monitor.sln --configuration Release -p:Platform=x64 --filter "Category!=Hardware"
 ```
 
-The ordinary suite explicitly excludes the opt-in physical-hardware test. To rerun that test locally with a connected video device, set `HDMI_CAPTURE_HARDWARE_VALIDATION=1` and use `--filter "Category=Hardware"`.
+The ordinary suite explicitly excludes opt-in physical-hardware tests. To rerun Phase 1 discovery validation locally with a connected video device, set `HDMI_CAPTURE_HARDWARE_VALIDATION=1` and use `--filter "Category=Hardware"`. Phase 2A preview validation is an interactive manual procedure documented in `docs/PHASE_2_LOW_LATENCY_PREVIEW.md`.
 
 The app targets stable .NET 10, Windows, x64, and `win-x64`. See `PRODUCT_SPEC.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `QA_MATRIX.md`, and `CODEX_RULES.md` before making changes.

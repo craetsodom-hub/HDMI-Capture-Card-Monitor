@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Capture.Devices;
+using HdmiCaptureCardMonitor.Capture.Preview;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Models;
 
@@ -13,12 +14,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IApplicationLogger logger;
     private readonly CaptureSessionStateMachine stateMachine;
     private readonly ICaptureDeviceDiscoveryService discoveryService;
-    private readonly bool captureActionsAvailable;
+    private readonly ICapturePreviewService previewService;
+    private readonly IPreviewSurface? previewSurface;
+    private readonly SynchronizationContext? uiContext;
+    private readonly bool laterFeaturesAvailable;
+    private readonly object previewOperationSync = new();
+    private readonly HashSet<Guid> retiredPreviewSessions = [];
     private CancellationTokenSource? deviceScanCancellation;
     private CancellationTokenSource? formatScanCancellation;
+    private CancellationTokenSource? previewCancellation;
     private int deviceScanGeneration;
     private int formatScanGeneration;
+    private int previewGeneration;
+    private Guid activePreviewSessionId;
     private Task formatDiscoveryCompletion = Task.CompletedTask;
+    private Task? previewStopOperation;
     private bool disposed;
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
@@ -28,38 +38,81 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string previewDescription = "Please wait while Windows checks available video inputs.";
     [ObservableProperty] private bool isDeviceScanRunning;
     [ObservableProperty] private bool isFormatScanRunning;
+    [ObservableProperty] private bool isPreviewMessageVisible = true;
     [ObservableProperty] private CaptureDevice? selectedDevice;
     [ObservableProperty] private NativeVideoCapability? selectedFormat;
+    [ObservableProperty] private PreviewDiagnostics? currentPreviewDiagnostics;
 
     public CaptureSessionState SessionState => stateMachine.CurrentState;
     public string SessionStateDisplay => GetSessionStateDisplay(SessionState);
-    public bool HasDevices => Devices.Count > 0 && !IsDeviceScanRunning;
-    public bool HasFormats => Formats.Count > 0 && !IsDeviceScanRunning && !IsFormatScanRunning;
-    public bool CanRefreshDevices => !IsDeviceScanRunning;
-    public string DevicePlaceholder => IsDeviceScanRunning ? "No device available" : HasDevices ? "Select a capture device" : "No device available";
-    public string FormatPlaceholder => SelectedDevice is null ? "Select a device first" : IsFormatScanRunning ? "Reading supported formats…" : HasFormats ? "Select a native format" : "No native formats available";
-    public bool CanStartCapture => captureActionsAvailable;
-    public bool CanFullscreen => captureActionsAvailable;
-    public bool CanTakeSnapshot => captureActionsAvailable;
-    public bool CanRecord => captureActionsAvailable;
+    public bool IsPreviewActive => SessionState is CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping;
+    public bool CanChangeCaptureSelection => !IsPreviewActive && !IsDeviceScanRunning && !IsFormatScanRunning;
+    public bool HasDevices => Devices.Count > 0 && CanChangeCaptureSelection;
+    public bool HasFormats => Formats.Count > 0 && CanChangeCaptureSelection;
+    public bool CanRefreshDevices => !IsDeviceScanRunning && !IsPreviewActive;
+    public string DevicePlaceholder => IsDeviceScanRunning ? "No device available" : Devices.Count > 0 ? "Select a capture device" : "No device available";
+    public string FormatPlaceholder => SelectedDevice is null ? "Select a device first" : IsFormatScanRunning ? "Reading supported formats…" : Formats.Count > 0 ? "Select a native format" : "No native formats available";
+    public bool CanStartCapture =>
+        SessionState == CaptureSessionState.DeviceReady &&
+        SelectedDevice is not null &&
+        SelectedFormat is not null &&
+        !IsDeviceScanRunning &&
+        !IsFormatScanRunning &&
+        previewSurface?.IsPresentable == true &&
+        !previewService.IsActive;
+    public bool CanStartStopPreview => CanStartCapture || SessionState == CaptureSessionState.Previewing;
+    public string StartStopText => SessionState switch
+    {
+        CaptureSessionState.Starting => "Starting…",
+        CaptureSessionState.Previewing => "Stop",
+        CaptureSessionState.Stopping => "Stopping…",
+        _ => "Start"
+    };
+    public bool CanFullscreen => laterFeaturesAvailable;
+    public bool CanTakeSnapshot => laterFeaturesAvailable;
+    public bool CanRecord => laterFeaturesAvailable;
     internal Task FormatDiscoveryCompletion => formatDiscoveryCompletion;
 
-    public MainWindowViewModel(IApplicationLogger logger, string? startupNotice = null, CaptureSessionStateMachine? stateMachine = null, ICaptureDeviceDiscoveryService? discoveryService = null)
+    public MainWindowViewModel(
+        IApplicationLogger logger,
+        string? startupNotice = null,
+        CaptureSessionStateMachine? stateMachine = null,
+        ICaptureDeviceDiscoveryService? discoveryService = null,
+        ICapturePreviewService? previewService = null,
+        IPreviewSurface? previewSurface = null,
+        SynchronizationContext? synchronizationContext = null)
     {
         this.logger = logger;
         this.discoveryService = discoveryService ?? new UnavailableCaptureDeviceDiscoveryService("Video device discovery is unavailable.");
+        this.previewService = previewService ?? new UnavailableCapturePreviewService(new PreviewFailure(PreviewFailureCategory.DeviceUnavailable, "Live preview is unavailable."));
+        this.previewSurface = previewSurface;
         this.stateMachine = stateMachine ?? new CaptureSessionStateMachine();
-        captureActionsAvailable = false;
+        laterFeaturesAvailable = false;
+        uiContext = synchronizationContext ?? SynchronizationContext.Current;
         this.stateMachine.StateChanged += OnStateChanged;
+        this.previewService.IsActiveChanged += OnPreviewServiceIsActiveChanged;
+        this.previewService.FirstFramePresented += OnFirstFramePresented;
+        this.previewService.DiagnosticsUpdated += OnDiagnosticsUpdated;
+        this.previewService.PreviewFailed += OnPreviewFailed;
+        if (this.previewSurface is not null)
+        {
+            this.previewSurface.AvailabilityChanged += OnSurfaceAvailabilityChanged;
+            this.previewSurface.PresentabilityChanged += OnSurfaceAvailabilityChanged;
+        }
         if (!string.IsNullOrWhiteSpace(startupNotice)) StatusMessage = startupNotice;
     }
 
     public void StartInitialDiscovery() => _ = RefreshDevicesAsync();
     internal Task RefreshDevicesForTestingAsync() => RefreshDevicesAsync();
+    internal Task StartPreviewForTestingAsync() => StartPreviewAsync();
+    internal Task StopPreviewForTestingAsync() => StopPreviewAsync();
 
     [RelayCommand(CanExecute = nameof(CanRefreshDevices))]
     private async Task RefreshDevicesAsync()
     {
+        RetirePreviewSession(activePreviewSessionId);
+        activePreviewSessionId = Guid.Empty;
+        Interlocked.Increment(ref previewGeneration);
         var generation = Interlocked.Increment(ref deviceScanGeneration);
         var localCancellation = new CancellationTokenSource();
         var previous = Interlocked.Exchange(ref deviceScanCancellation, localCancellation);
@@ -72,7 +125,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Formats.Clear();
         SelectedDevice = null;
         SelectedFormat = null;
-        NotifyDeviceProperties();
+        NotifyCaptureProperties();
         IsDeviceScanRunning = true;
         RefreshDevicesCommand.NotifyCanExecuteChanged();
         TryTransition(CaptureSessionState.Enumerating);
@@ -91,23 +144,20 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
             if (!result.IsSuccess)
             {
-                ApplyFailureMessage(result.Failure!);
+                ApplyDiscoveryFailureMessage(result.Failure!);
                 TryTransition(CaptureSessionState.Faulted);
                 return;
             }
 
             foreach (var device in result.Value ?? []) Devices.Add(device);
-            NotifyDeviceProperties();
+            NotifyCaptureProperties();
             if (Devices.Count == 0)
             {
                 StatusMessage = "No compatible video capture devices found.";
                 PreviewTitle = "No capture device detected";
                 PreviewDescription = "Connect a compatible USB HDMI capture card and select Refresh.";
             }
-            else
-            {
-                ApplySelectDeviceState();
-            }
+            else ApplySelectDeviceState();
             TryTransition(CaptureSessionState.Idle);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -118,7 +168,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             if (!IsCurrentDeviceRequest(generation) || disposed) return;
             logger.LogError("Device enumeration failed.", exception);
-            ApplyFailureMessage(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, DiscoveryFailureCategory.Unknown, null, "Device enumeration failed.", exception));
+            ApplyDiscoveryFailureMessage(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, DiscoveryFailureCategory.Unknown, null, "Device enumeration failed.", exception));
             TryTransition(CaptureSessionState.Faulted);
         }
         finally
@@ -126,8 +176,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (IsCurrentDeviceRequest(generation) && !disposed)
             {
                 IsDeviceScanRunning = false;
-                NotifyDeviceProperties();
-                RefreshDevicesCommand.NotifyCanExecuteChanged();
+                NotifyCaptureProperties();
             }
         }
     }
@@ -135,11 +184,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     partial void OnSelectedDeviceChanged(CaptureDevice? value)
     {
         formatDiscoveryCompletion = LoadFormatsAsync(value);
-        NotifyDeviceProperties();
+        NotifyCaptureProperties();
     }
 
-    partial void OnIsDeviceScanRunningChanged(bool value) => NotifyDeviceProperties();
-    partial void OnIsFormatScanRunningChanged(bool value) => NotifyDeviceProperties();
+    partial void OnSelectedFormatChanged(NativeVideoCapability? value)
+    {
+        if (value is not null) RecoverReadyStateAfterCleanup();
+        NotifyCaptureProperties();
+    }
+
+    partial void OnIsDeviceScanRunningChanged(bool value) { _ = value; NotifyCaptureProperties(); }
+    partial void OnIsFormatScanRunningChanged(bool value) { _ = value; NotifyCaptureProperties(); }
 
     private async Task LoadFormatsAsync(CaptureDevice? device)
     {
@@ -147,7 +202,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         CancelFormats();
         Formats.Clear();
         SelectedFormat = null;
-        NotifyDeviceProperties();
+        NotifyCaptureProperties();
 
         if (device is null)
         {
@@ -176,16 +231,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
             if (!result.IsSuccess)
             {
-                ApplyFailureMessage(result.Failure!);
+                ApplyDiscoveryFailureMessage(result.Failure!);
                 TryTransition(CaptureSessionState.Faulted);
                 return;
             }
 
             foreach (var format in result.Value ?? []) Formats.Add(format);
-            NotifyDeviceProperties();
+            NotifyCaptureProperties();
             if (Formats.Count == 0)
             {
-                ApplyFailureMessage(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.NoUsableFormats, null, "A successful capability result contained no formats."));
+                ApplyDiscoveryFailureMessage(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.NoUsableFormats, null, "A successful capability result contained no formats."));
                 TryTransition(CaptureSessionState.Faulted);
                 return;
             }
@@ -203,13 +258,134 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             if (!IsCurrentFormatRequest(generation, device) || disposed) return;
             logger.LogError("Native format discovery failed.", exception);
-            ApplyFailureMessage(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.Unknown, null, "Native format discovery failed.", exception));
+            ApplyDiscoveryFailureMessage(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.Unknown, null, "Native format discovery failed.", exception));
             TryTransition(CaptureSessionState.Faulted);
         }
         finally
         {
             if (IsCurrentFormatRequest(generation, device) && !disposed) IsFormatScanRunning = false;
         }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanStartStopPreview))]
+    private async Task TogglePreviewAsync()
+    {
+        if (SessionState == CaptureSessionState.Previewing) await StopPreviewAsync();
+        else await StartPreviewAsync();
+    }
+
+    private async Task StartPreviewAsync()
+    {
+        if (!CanStartCapture || disposed || SelectedDevice is null || SelectedFormat is null || previewSurface is null) return;
+        var generation = Interlocked.Increment(ref previewGeneration);
+        var localCancellation = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref previewCancellation, localCancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+        activePreviewSessionId = Guid.Empty;
+        CurrentPreviewDiagnostics = null;
+        IsPreviewMessageVisible = true;
+        previewSurface.SetVideoVisible(false);
+        previewSurface.SetSurfaceActive(true);
+        TryTransition(CaptureSessionState.Starting);
+        StatusMessage = "Starting live preview…";
+        PreviewTitle = "Starting preview…";
+        PreviewDescription = "Opening the selected video mode and preparing GPU rendering.";
+
+        var request = new PreviewStartRequest(SelectedDevice, SelectedFormat, previewSurface, localCancellation.Token);
+        PreviewStartResult result;
+        try
+        {
+            result = await previewService.StartAsync(request);
+        }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested) { return; }
+        catch (Exception exception)
+        {
+            if (!IsCurrentPreviewOperation(generation) || disposed) return;
+            logger.LogError("Preview startup failed unexpectedly.", exception);
+            ApplyPreviewFailureMessage(new PreviewFailure(PreviewFailureCategory.Unknown, "The live preview could not start.", null, exception));
+            TryTransition(CaptureSessionState.Faulted);
+            return;
+        }
+
+        if (!IsCurrentPreviewOperation(generation) || disposed) return;
+        if (result.IsCancelled)
+        {
+            previewSurface.SetVideoVisible(false);
+            previewSurface.SetSurfaceActive(false);
+            IsPreviewMessageVisible = true;
+            TryTransition(CaptureSessionState.DeviceReady);
+            StatusMessage = "Preview start was cancelled.";
+            PreviewTitle = "Preview stopped";
+            PreviewDescription = "Select Start to open the selected video input.";
+            return;
+        }
+        if (!result.IsSuccess)
+        {
+            RetirePreviewSession(result.SessionId);
+            activePreviewSessionId = Guid.Empty;
+            previewSurface.SetVideoVisible(false);
+            previewSurface.SetSurfaceActive(false);
+            ApplyPreviewFailureMessage(result.Failure!);
+            TryTransition(CaptureSessionState.Faulted);
+            if (result.Failure?.Category != PreviewFailureCategory.ShutdownTimeout)
+                RecoverReadyStateAfterCleanup();
+            return;
+        }
+
+        if (activePreviewSessionId == Guid.Empty) activePreviewSessionId = result.SessionId;
+    }
+
+    private Task StopPreviewAsync()
+    {
+        lock (previewOperationSync)
+        {
+            if (disposed || SessionState is not (CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping)) return Task.CompletedTask;
+            return previewStopOperation ??= StopPreviewAndResetAsync();
+        }
+    }
+
+    private async Task StopPreviewAndResetAsync()
+    {
+        try { await StopPreviewCoreAsync(); }
+        finally { lock (previewOperationSync) previewStopOperation = null; }
+    }
+
+    private async Task StopPreviewCoreAsync()
+    {
+        var generation = Interlocked.Increment(ref previewGeneration);
+        var cancellation = Interlocked.Exchange(ref previewCancellation, null);
+        cancellation?.Cancel();
+        cancellation?.Dispose();
+        if (SessionState != CaptureSessionState.Stopping) TryTransition(CaptureSessionState.Stopping);
+        StatusMessage = "Stopping live preview…";
+        PreviewTitle = "Stopping preview…";
+        PreviewDescription = "Releasing the video device and graphics resources safely.";
+
+        PreviewStopResult result;
+        try { result = await previewService.StopAsync(); }
+        catch (Exception exception)
+        {
+            result = PreviewStopResult.Failed(new PreviewFailure(PreviewFailureCategory.Unknown, "The live preview could not stop cleanly.", null, exception));
+        }
+
+        if (!IsCurrentPreviewOperation(generation) || disposed) return;
+        previewSurface?.SetVideoVisible(false);
+        previewSurface?.SetSurfaceActive(false);
+        IsPreviewMessageVisible = true;
+        RetirePreviewSession(activePreviewSessionId);
+        activePreviewSessionId = Guid.Empty;
+        if (!result.IsSuccess)
+        {
+            ApplyPreviewFailureMessage(result.Failure!);
+            TryTransition(CaptureSessionState.Faulted);
+            return;
+        }
+
+        TryTransition(SelectedDevice is not null && SelectedFormat is not null ? CaptureSessionState.DeviceReady : CaptureSessionState.Idle);
+        StatusMessage = "Preview stopped.";
+        PreviewTitle = "Preview stopped";
+        PreviewDescription = "Select Start to resume the selected video input.";
     }
 
     [RelayCommand] private void ShowSettingsInformation() => StatusMessage = "Settings are not available yet.";
@@ -221,11 +397,115 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         disposed = true;
         Interlocked.Increment(ref deviceScanGeneration);
         Interlocked.Increment(ref formatScanGeneration);
+        Interlocked.Increment(ref previewGeneration);
+        previewService.FirstFramePresented -= OnFirstFramePresented;
+        previewService.DiagnosticsUpdated -= OnDiagnosticsUpdated;
+        previewService.PreviewFailed -= OnPreviewFailed;
+        previewService.IsActiveChanged -= OnPreviewServiceIsActiveChanged;
+        if (previewSurface is not null)
+        {
+            previewSurface.AvailabilityChanged -= OnSurfaceAvailabilityChanged;
+            previewSurface.PresentabilityChanged -= OnSurfaceAvailabilityChanged;
+            previewSurface.SetVideoVisible(false);
+        }
         CancelFormats();
         var deviceCancellation = Interlocked.Exchange(ref deviceScanCancellation, null);
         deviceCancellation?.Cancel();
         deviceCancellation?.Dispose();
+        var activeCancellation = Interlocked.Exchange(ref previewCancellation, null);
+        activeCancellation?.Cancel();
+        activeCancellation?.Dispose();
+        try { _ = previewService.StopAsync().GetAwaiter().GetResult(); }
+        catch (Exception exception) { SafeLogError("Preview shutdown failed safely during window disposal.", exception); }
+        previewSurface?.SetSurfaceActive(false);
         stateMachine.StateChanged -= OnStateChanged;
+    }
+
+    private void OnFirstFramePresented(object? sender, PreviewSessionEventArgs e) => PostToUi(() =>
+    {
+        if (disposed || SessionState != CaptureSessionState.Starting) return;
+        if (IsRetiredPreviewSession(e.SessionId)) return;
+        if (activePreviewSessionId != Guid.Empty && activePreviewSessionId != e.SessionId) return;
+        activePreviewSessionId = e.SessionId;
+        previewSurface?.SetVideoVisible(true);
+        IsPreviewMessageVisible = false;
+        TryTransition(CaptureSessionState.Previewing);
+        StatusMessage = "Previewing live video.";
+    });
+
+    private void OnDiagnosticsUpdated(object? sender, PreviewDiagnosticsEventArgs e) => PostToUi(() =>
+    {
+        if (disposed || activePreviewSessionId != e.SessionId) return;
+        CurrentPreviewDiagnostics = e.Diagnostics;
+        if (SessionState == CaptureSessionState.Previewing)
+            StatusMessage = $"Previewing · {e.Diagnostics.FramesReceivedPerSecond:0.0} received / {e.Diagnostics.RenderedFramesPerSecond:0.0} rendered fps";
+    });
+
+    private void OnPreviewFailed(object? sender, PreviewFailureEventArgs e) => PostToUi(() =>
+    {
+        if (disposed || IsDeviceScanRunning || IsRetiredPreviewSession(e.SessionId)) return;
+        if (SessionState is not (CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping)) return;
+        // Startup failures are returned by StartAsync after that session's cleanup.
+        // Runtime events are accepted only for the session already bound here, so a
+        // queued event from an older Starting session cannot fault a newer attempt.
+        if (activePreviewSessionId == Guid.Empty || activePreviewSessionId != e.SessionId) return;
+        var generation = Interlocked.Increment(ref previewGeneration);
+        activePreviewSessionId = e.SessionId;
+        previewSurface?.SetVideoVisible(false);
+        IsPreviewMessageVisible = true;
+        ApplyPreviewFailureMessage(e.Failure);
+        TryTransition(CaptureSessionState.Faulted);
+        _ = CleanupFailedPreviewAsync(e.SessionId, generation);
+    });
+
+    private async Task CleanupFailedPreviewAsync(Guid failedSessionId, int generation)
+    {
+        PreviewStopResult result;
+        try { result = await previewService.StopAsync(); }
+        catch (Exception exception)
+        {
+            logger.LogError("Preview cleanup after failure did not complete.", exception);
+            result = PreviewStopResult.Failed(new PreviewFailure(PreviewFailureCategory.Unknown, "Preview cleanup failed.", null, exception));
+        }
+
+        PostToUi(() =>
+        {
+            if (disposed || generation != Volatile.Read(ref previewGeneration) || activePreviewSessionId != failedSessionId) return;
+            RetirePreviewSession(failedSessionId);
+            activePreviewSessionId = Guid.Empty;
+            previewSurface?.SetVideoVisible(false);
+            previewSurface?.SetSurfaceActive(false);
+            IsPreviewMessageVisible = true;
+            NotifyCaptureProperties();
+            if (result.IsSuccess)
+            {
+                RecoverReadyStateAfterCleanup();
+                return;
+            }
+
+            ApplyPreviewFailureMessage(result.Failure ?? new PreviewFailure(PreviewFailureCategory.Unknown, "Preview cleanup failed."));
+            TryTransition(CaptureSessionState.Faulted);
+        });
+    }
+
+    private void OnPreviewServiceIsActiveChanged(object? sender, EventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        PostToUi(NotifyCaptureProperties);
+    }
+
+    private void OnSurfaceAvailabilityChanged(object? sender, EventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        PostToUi(NotifyCaptureProperties);
+    }
+
+    private void PostToUi(Action action)
+    {
+        if (uiContext is null || SynchronizationContext.Current == uiContext) action();
+        else uiContext.Post(static state => ((Action)state!).Invoke(), action);
     }
 
     private void CancelFormats()
@@ -237,13 +517,45 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private bool IsCurrentDeviceRequest(int generation) => generation == Volatile.Read(ref deviceScanGeneration);
     private bool IsCurrentFormatRequest(int generation, CaptureDevice device) => generation == Volatile.Read(ref formatScanGeneration) && ReferenceEquals(device, SelectedDevice);
+    private bool IsCurrentPreviewOperation(int generation) => generation == Volatile.Read(ref previewGeneration);
 
-    private void NotifyDeviceProperties()
+    private void RetirePreviewSession(Guid sessionId)
     {
+        if (sessionId == Guid.Empty) return;
+        lock (previewOperationSync) retiredPreviewSessions.Add(sessionId);
+    }
+
+    private bool IsRetiredPreviewSession(Guid sessionId)
+    {
+        lock (previewOperationSync) return retiredPreviewSessions.Contains(sessionId);
+    }
+
+    private void SafeLogError(string message, Exception exception)
+    {
+        try { logger.LogError(message, exception); }
+        catch (Exception) { }
+    }
+
+    private void RecoverReadyStateAfterCleanup()
+    {
+        if (disposed || previewService.IsActive || SelectedDevice is null || SelectedFormat is null) return;
+        if (SessionState == CaptureSessionState.Faulted) TryTransition(CaptureSessionState.DeviceReady);
+    }
+
+    private void NotifyCaptureProperties()
+    {
+        OnPropertyChanged(nameof(IsPreviewActive));
+        OnPropertyChanged(nameof(CanChangeCaptureSelection));
         OnPropertyChanged(nameof(HasDevices));
         OnPropertyChanged(nameof(HasFormats));
+        OnPropertyChanged(nameof(CanRefreshDevices));
         OnPropertyChanged(nameof(DevicePlaceholder));
         OnPropertyChanged(nameof(FormatPlaceholder));
+        OnPropertyChanged(nameof(CanStartCapture));
+        OnPropertyChanged(nameof(CanStartStopPreview));
+        OnPropertyChanged(nameof(StartStopText));
+        RefreshDevicesCommand.NotifyCanExecuteChanged();
+        TogglePreviewCommand.NotifyCanExecuteChanged();
     }
 
     private void ApplySelectDeviceState()
@@ -269,7 +581,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         PreviewDescription = "Select another capture device or select Refresh to try again.";
     }
 
-    private void ApplyFailureMessage(DiscoveryFailure failure)
+    private void ApplyDiscoveryFailureMessage(DiscoveryFailure failure)
     {
         logger.Warning($"Video discovery failed during {failure.Operation} ({failure.HResultDisplay}).");
         switch (failure.Category)
@@ -297,15 +609,48 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    private void ApplyPreviewFailureMessage(PreviewFailure failure)
+    {
+        logger.Warning($"Preview failed safely: {failure.Category}.");
+        StatusMessage = failure.Category switch
+        {
+            PreviewFailureCategory.AccessDenied => "Windows camera access must be enabled before preview can start.",
+            PreviewFailureCategory.DeviceBusy => "The selected camera is in use by another application.",
+            PreviewFailureCategory.DeviceUnavailable => "The selected video device is unavailable.",
+            PreviewFailureCategory.SelectedFormatUnavailable => "The selected native format is no longer available.",
+            PreviewFailureCategory.DecoderUnavailable => "Windows could not decode the selected native format.",
+            PreviewFailureCategory.D3DInitializationFailure => "GPU preview could not be initialized.",
+            PreviewFailureCategory.DeviceRemoved => "The graphics device was reset or removed.",
+            PreviewFailureCategory.UnsupportedGpuBuffer or PreviewFailureCategory.UnsupportedPreviewFormat => "The selected format cannot use the required GPU preview path.",
+            PreviewFailureCategory.PreviewStalled => "Video input stalled.",
+            PreviewFailureCategory.StartupTimeout => "Preview startup timed out.",
+            PreviewFailureCategory.ShutdownTimeout => "Preview shutdown exceeded the safety timeout.",
+            _ => "Live preview stopped unexpectedly."
+        };
+        PreviewTitle = failure.Category == PreviewFailureCategory.PreviewStalled ? "Video input stalled" : "Preview unavailable";
+        PreviewDescription = failure.Category switch
+        {
+            PreviewFailureCategory.AccessDenied => "Enable camera access for desktop apps in Windows Privacy & security settings, then try again.",
+            PreviewFailureCategory.DeviceBusy => "Close other camera applications and select Start again.",
+            PreviewFailureCategory.SelectedFormatUnavailable => "Refresh the device list and select an available native format.",
+            PreviewFailureCategory.DecoderUnavailable or PreviewFailureCategory.UnsupportedGpuBuffer or PreviewFailureCategory.UnsupportedPreviewFormat => "Select another native video format and try again.",
+            PreviewFailureCategory.StartupTimeout => "Verify the device connection and try Start again.",
+            _ => "Stop the preview if necessary, verify the device connection, and try again."
+        };
+    }
+
     private void TryTransition(CaptureSessionState target)
     {
         if (stateMachine.CanTransitionTo(target)) stateMachine.TryTransitionTo(target);
     }
 
-    private void OnStateChanged(object? sender, CaptureSessionState _)
+    private void OnStateChanged(object? sender, CaptureSessionState state)
     {
+        _ = sender;
+        _ = state;
         OnPropertyChanged(nameof(SessionState));
         OnPropertyChanged(nameof(SessionStateDisplay));
+        NotifyCaptureProperties();
     }
 
     private static string GetSessionStateDisplay(CaptureSessionState state) => state switch

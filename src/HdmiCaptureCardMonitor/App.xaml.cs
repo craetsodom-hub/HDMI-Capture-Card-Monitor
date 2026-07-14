@@ -3,6 +3,7 @@ using System.Windows;
 using HdmiCaptureCardMonitor.Capture.Interop;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Capture.Devices;
+using HdmiCaptureCardMonitor.Capture.Preview;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Models;
 
@@ -13,6 +14,7 @@ public partial class App : Application, IDisposable
     private IApplicationLogger? logger;
     private MediaFoundationRuntime? mediaFoundationRuntime;
     private ICaptureDeviceDiscoveryService? discoveryService;
+    private ICapturePreviewService? previewService;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -26,6 +28,7 @@ public partial class App : Application, IDisposable
         if (startup.IsSuccess)
         {
             discoveryService = new MediaFoundationDeviceDiscoveryService(logger);
+            previewService = new MediaFoundationCapturePreviewService(logger);
         }
         else
         {
@@ -34,9 +37,13 @@ public partial class App : Application, IDisposable
                 ? "Required Windows media components are unavailable. Install the Media Feature Pack from Windows Optional Features, restart Windows, and select Refresh."
                 : "Video discovery is unavailable on this Windows installation. Select Refresh after resolving the Windows media components issue.";
             discoveryService = new UnavailableCaptureDeviceDiscoveryService("Media Foundation startup failed.", category, startup.HResult);
+            previewService = new UnavailableCapturePreviewService(new PreviewFailure(
+                startup.Status == MediaFoundationStartupStatus.MissingMediaComponents ? PreviewFailureCategory.DeviceUnavailable : PreviewFailureCategory.Unknown,
+                "Live preview is unavailable because Windows media components did not start.",
+                startup.HResult));
         }
         logger.Information("Application startup completed.");
-        new MainWindow(logger, discoveryService, startupNotice).Show();
+        new MainWindow(logger, discoveryService, previewService, startupNotice).Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -48,15 +55,19 @@ public partial class App : Application, IDisposable
 
     public void Dispose()
     {
+        previewService?.Dispose();
         discoveryService?.Dispose();
-        if (discoveryService is not MediaFoundationDeviceDiscoveryService activeService || activeService.WorkersSettled)
+        var discoverySettled = discoveryService is not MediaFoundationDeviceDiscoveryService activeDiscovery || activeDiscovery.WorkersSettled;
+        var previewSettled = previewService is not MediaFoundationCapturePreviewService activePreview || activePreview.WorkersSettled;
+        if (discoverySettled && previewSettled)
         {
             mediaFoundationRuntime?.Dispose();
         }
         else
         {
-            logger?.Warning("Media Foundation shutdown was skipped because a discovery worker exceeded the bounded shutdown period.");
+            logger?.Warning("Media Foundation shutdown was skipped because a discovery or preview worker exceeded the bounded shutdown period.");
         }
+        previewService = null;
         discoveryService = null;
         mediaFoundationRuntime = null;
         GC.SuppressFinalize(this);
