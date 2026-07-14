@@ -16,14 +16,21 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
     private nint childWindow;
     private PreviewSurfaceSize pixelSize;
     private bool videoVisible;
+    private bool windowMinimized;
+    private bool lastPublishedPresentability;
+
+    internal static WINDOW_STYLE ChildWindowStyle =>
+        WINDOW_STYLE.WS_CHILD | WINDOW_STYLE.WS_CLIPSIBLINGS | WINDOW_STYLE.WS_CLIPCHILDREN;
 
     nint IPreviewSurface.Handle => childWindow;
     public PreviewSurfaceSize PixelSize => pixelSize;
     public bool IsAvailable => childWindow != 0;
+    public bool IsPresentable => IsAvailable && !windowMinimized && !pixelSize.IsEmpty;
     public bool IsVideoVisible => videoVisible;
 
     public event EventHandler<PreviewSurfaceSize>? PixelSizeChanged;
     public event EventHandler? AvailabilityChanged;
+    public event EventHandler? PresentabilityChanged;
 
     public void SetSurfaceActive(bool active)
     {
@@ -33,12 +40,10 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
             return;
         }
 
-        if (!active)
-        {
-            videoVisible = false;
-            ApplyNativeVisibility();
-        }
+        if (!active) videoVisible = false;
         Visibility = active ? Visibility.Visible : Visibility.Hidden;
+        ApplyNativeVisibility();
+        PublishPresentabilityIfChanged();
     }
 
     public void SetVideoVisible(bool visible)
@@ -53,18 +58,30 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
         ApplyNativeVisibility();
     }
 
+    public void SetWindowMinimized(bool minimized)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(() => SetWindowMinimized(minimized));
+            return;
+        }
+
+        windowMinimized = minimized;
+        ApplyNativeVisibility();
+        PublishPresentabilityIfChanged();
+    }
+
     protected override unsafe HandleRef BuildWindowCore(HandleRef hwndParent)
     {
-        var style = WINDOW_STYLE.WS_CHILD | WINDOW_STYLE.WS_VISIBLE | WINDOW_STYLE.WS_CLIPSIBLINGS | WINDOW_STYLE.WS_CLIPCHILDREN;
         var window = PInvoke.CreateWindowEx(
             default,
             "STATIC",
             string.Empty,
-            style,
-            0,
-            0,
-            Math.Max(1, pixelSize.PixelWidth),
-            Math.Max(1, pixelSize.PixelHeight),
+            ChildWindowStyle,
+            -32000,
+            -32000,
+            1,
+            1,
             new HWND(hwndParent.Handle),
             null,
             null,
@@ -78,6 +95,7 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
         _ = Dispatcher.BeginInvoke(() => SetSurfaceActive(false));
         UpdatePixelSize();
         AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+        PublishPresentabilityIfChanged();
         return new HandleRef(this, childWindow);
     }
 
@@ -88,6 +106,7 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
         childWindow = 0;
         videoVisible = false;
         AvailabilityChanged?.Invoke(this, EventArgs.Empty);
+        PublishPresentabilityIfChanged();
     }
 
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
@@ -124,13 +143,14 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
         }
 
         PixelSizeChanged?.Invoke(this, next);
+        PublishPresentabilityIfChanged();
     }
 
     private void ApplyNativeVisibility()
     {
         if (childWindow == 0) return;
         var window = new HWND((void*)childWindow);
-        if (videoVisible)
+        if (videoVisible && IsPresentable)
         {
             if (!pixelSize.IsEmpty)
             {
@@ -144,5 +164,13 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
         _ = PInvoke.ShowWindow(window, SHOW_WINDOW_CMD.SW_HIDE);
         _ = PInvoke.SetWindowPos(window, default, -32000, -32000, 1, 1,
             SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE | SET_WINDOW_POS_FLAGS.SWP_NOZORDER);
+    }
+
+    private void PublishPresentabilityIfChanged()
+    {
+        var presentable = IsPresentable;
+        if (presentable == lastPublishedPresentability) return;
+        lastPublishedPresentability = presentable;
+        PresentabilityChanged?.Invoke(this, EventArgs.Empty);
     }
 }

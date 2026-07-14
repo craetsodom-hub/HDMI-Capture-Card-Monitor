@@ -17,7 +17,18 @@ public sealed record PreviewDiagnostics(
     long? LastSampleTimestamp,
     DateTimeOffset? LastSuccessfulFrameTime,
     int ConsecutiveReadFailures,
-    PreviewFailureCategory? LastFailureCategory)
+    PreviewFailureCategory? LastFailureCategory,
+    uint ActualOutputWidth,
+    uint ActualOutputHeight,
+    uint ActualOutputFrameRateNumerator,
+    uint ActualOutputFrameRateDenominator,
+    VideoInterlaceMode ActualOutputInterlaceMode,
+    double FramesReceivedPerSecond,
+    double SampleTimestampFramesPerSecond,
+    double AverageSampleReturnToPresentMilliseconds,
+    double P95SampleReturnToPresentMilliseconds,
+    long FramesSkippedForUnavailableSurface,
+    long PresentWasStillDrawingCount)
 {
     public static PreviewDiagnostics Empty(string device, string requestedFormat) => new(
         device,
@@ -36,5 +47,16 @@ public sealed record PreviewDiagnostics(
         null,
         null,
         0,
-        null);
+        null,
+        0,
+        0,
+        0,
+        0,
+        VideoInterlaceMode.Unknown,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0);
 }

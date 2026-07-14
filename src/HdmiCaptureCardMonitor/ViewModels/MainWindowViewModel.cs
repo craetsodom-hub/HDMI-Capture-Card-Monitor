@@ -19,6 +19,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly SynchronizationContext? uiContext;
     private readonly bool laterFeaturesAvailable;
     private readonly object previewOperationSync = new();
+    private readonly HashSet<Guid> retiredPreviewSessions = [];
     private CancellationTokenSource? deviceScanCancellation;
     private CancellationTokenSource? formatScanCancellation;
     private CancellationTokenSource? previewCancellation;
@@ -57,7 +58,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedFormat is not null &&
         !IsDeviceScanRunning &&
         !IsFormatScanRunning &&
-        previewSurface?.IsAvailable == true &&
+        previewSurface?.IsPresentable == true &&
         !previewService.IsActive;
     public bool CanStartStopPreview => CanStartCapture || SessionState == CaptureSessionState.Previewing;
     public string StartStopText => SessionState switch
@@ -89,10 +90,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         laterFeaturesAvailable = false;
         uiContext = synchronizationContext ?? SynchronizationContext.Current;
         this.stateMachine.StateChanged += OnStateChanged;
+        this.previewService.IsActiveChanged += OnPreviewServiceIsActiveChanged;
         this.previewService.FirstFramePresented += OnFirstFramePresented;
         this.previewService.DiagnosticsUpdated += OnDiagnosticsUpdated;
         this.previewService.PreviewFailed += OnPreviewFailed;
-        if (this.previewSurface is not null) this.previewSurface.AvailabilityChanged += OnSurfaceAvailabilityChanged;
+        if (this.previewSurface is not null)
+        {
+            this.previewSurface.AvailabilityChanged += OnSurfaceAvailabilityChanged;
+            this.previewSurface.PresentabilityChanged += OnSurfaceAvailabilityChanged;
+        }
         if (!string.IsNullOrWhiteSpace(startupNotice)) StatusMessage = startupNotice;
     }
 
@@ -104,6 +110,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanRefreshDevices))]
     private async Task RefreshDevicesAsync()
     {
+        RetirePreviewSession(activePreviewSessionId);
+        activePreviewSessionId = Guid.Empty;
+        Interlocked.Increment(ref previewGeneration);
         var generation = Interlocked.Increment(ref deviceScanGeneration);
         var localCancellation = new CancellationTokenSource();
         var previous = Interlocked.Exchange(ref deviceScanCancellation, localCancellation);
@@ -180,7 +189,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedFormatChanged(NativeVideoCapability? value)
     {
-        _ = value;
+        if (value is not null) RecoverReadyStateAfterCleanup();
         NotifyCaptureProperties();
     }
 
@@ -313,10 +322,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         if (!result.IsSuccess)
         {
+            RetirePreviewSession(result.SessionId);
+            activePreviewSessionId = Guid.Empty;
             previewSurface.SetVideoVisible(false);
             previewSurface.SetSurfaceActive(false);
             ApplyPreviewFailureMessage(result.Failure!);
             TryTransition(CaptureSessionState.Faulted);
+            if (result.Failure?.Category != PreviewFailureCategory.ShutdownTimeout)
+                RecoverReadyStateAfterCleanup();
             return;
         }
 
@@ -360,6 +373,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         previewSurface?.SetVideoVisible(false);
         previewSurface?.SetSurfaceActive(false);
         IsPreviewMessageVisible = true;
+        RetirePreviewSession(activePreviewSessionId);
         activePreviewSessionId = Guid.Empty;
         if (!result.IsSuccess)
         {
@@ -387,9 +401,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         previewService.FirstFramePresented -= OnFirstFramePresented;
         previewService.DiagnosticsUpdated -= OnDiagnosticsUpdated;
         previewService.PreviewFailed -= OnPreviewFailed;
+        previewService.IsActiveChanged -= OnPreviewServiceIsActiveChanged;
         if (previewSurface is not null)
         {
             previewSurface.AvailabilityChanged -= OnSurfaceAvailabilityChanged;
+            previewSurface.PresentabilityChanged -= OnSurfaceAvailabilityChanged;
             previewSurface.SetVideoVisible(false);
         }
         CancelFormats();
@@ -400,7 +416,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         activeCancellation?.Cancel();
         activeCancellation?.Dispose();
         try { _ = previewService.StopAsync().GetAwaiter().GetResult(); }
-        catch (Exception exception) { logger.LogError("Preview shutdown failed safely during window disposal.", exception); }
+        catch (Exception exception) { SafeLogError("Preview shutdown failed safely during window disposal.", exception); }
         previewSurface?.SetSurfaceActive(false);
         stateMachine.StateChanged -= OnStateChanged;
     }
@@ -408,6 +424,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void OnFirstFramePresented(object? sender, PreviewSessionEventArgs e) => PostToUi(() =>
     {
         if (disposed || SessionState != CaptureSessionState.Starting) return;
+        if (IsRetiredPreviewSession(e.SessionId)) return;
         if (activePreviewSessionId != Guid.Empty && activePreviewSessionId != e.SessionId) return;
         activePreviewSessionId = e.SessionId;
         previewSurface?.SetVideoVisible(true);
@@ -421,38 +438,61 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (disposed || activePreviewSessionId != e.SessionId) return;
         CurrentPreviewDiagnostics = e.Diagnostics;
         if (SessionState == CaptureSessionState.Previewing)
-            StatusMessage = $"Previewing · {e.Diagnostics.RenderedFramesPerSecond:0.0} rendered fps";
+            StatusMessage = $"Previewing · {e.Diagnostics.FramesReceivedPerSecond:0.0} received / {e.Diagnostics.RenderedFramesPerSecond:0.0} rendered fps";
     });
 
     private void OnPreviewFailed(object? sender, PreviewFailureEventArgs e) => PostToUi(() =>
     {
-        if (disposed || (activePreviewSessionId != Guid.Empty && activePreviewSessionId != e.SessionId)) return;
-        Interlocked.Increment(ref previewGeneration);
+        if (disposed || IsDeviceScanRunning || IsRetiredPreviewSession(e.SessionId)) return;
+        if (SessionState is not (CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping)) return;
+        // Startup failures are returned by StartAsync after that session's cleanup.
+        // Runtime events are accepted only for the session already bound here, so a
+        // queued event from an older Starting session cannot fault a newer attempt.
+        if (activePreviewSessionId == Guid.Empty || activePreviewSessionId != e.SessionId) return;
+        var generation = Interlocked.Increment(ref previewGeneration);
         activePreviewSessionId = e.SessionId;
         previewSurface?.SetVideoVisible(false);
         IsPreviewMessageVisible = true;
         ApplyPreviewFailureMessage(e.Failure);
         TryTransition(CaptureSessionState.Faulted);
-        ObserveStopAfterFailure();
+        _ = CleanupFailedPreviewAsync(e.SessionId, generation);
     });
 
-    private void ObserveStopAfterFailure()
+    private async Task CleanupFailedPreviewAsync(Guid failedSessionId, int generation)
     {
-        var task = previewService.StopAsync();
-        _ = task.ContinueWith(
-            completed =>
+        PreviewStopResult result;
+        try { result = await previewService.StopAsync(); }
+        catch (Exception exception)
+        {
+            logger.LogError("Preview cleanup after failure did not complete.", exception);
+            result = PreviewStopResult.Failed(new PreviewFailure(PreviewFailureCategory.Unknown, "Preview cleanup failed.", null, exception));
+        }
+
+        PostToUi(() =>
+        {
+            if (disposed || generation != Volatile.Read(ref previewGeneration) || activePreviewSessionId != failedSessionId) return;
+            RetirePreviewSession(failedSessionId);
+            activePreviewSessionId = Guid.Empty;
+            previewSurface?.SetVideoVisible(false);
+            previewSurface?.SetSurfaceActive(false);
+            IsPreviewMessageVisible = true;
+            NotifyCaptureProperties();
+            if (result.IsSuccess)
             {
-                if (completed.IsFaulted)
-                {
-                    logger.LogError("Preview cleanup after failure did not complete.", completed.Exception);
-                    return;
-                }
-                if (!completed.Result.TimedOut)
-                    PostToUi(() => previewSurface?.SetSurfaceActive(false));
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+                RecoverReadyStateAfterCleanup();
+                return;
+            }
+
+            ApplyPreviewFailureMessage(result.Failure ?? new PreviewFailure(PreviewFailureCategory.Unknown, "Preview cleanup failed."));
+            TryTransition(CaptureSessionState.Faulted);
+        });
+    }
+
+    private void OnPreviewServiceIsActiveChanged(object? sender, EventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        PostToUi(NotifyCaptureProperties);
     }
 
     private void OnSurfaceAvailabilityChanged(object? sender, EventArgs e)
@@ -478,6 +518,29 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool IsCurrentDeviceRequest(int generation) => generation == Volatile.Read(ref deviceScanGeneration);
     private bool IsCurrentFormatRequest(int generation, CaptureDevice device) => generation == Volatile.Read(ref formatScanGeneration) && ReferenceEquals(device, SelectedDevice);
     private bool IsCurrentPreviewOperation(int generation) => generation == Volatile.Read(ref previewGeneration);
+
+    private void RetirePreviewSession(Guid sessionId)
+    {
+        if (sessionId == Guid.Empty) return;
+        lock (previewOperationSync) retiredPreviewSessions.Add(sessionId);
+    }
+
+    private bool IsRetiredPreviewSession(Guid sessionId)
+    {
+        lock (previewOperationSync) return retiredPreviewSessions.Contains(sessionId);
+    }
+
+    private void SafeLogError(string message, Exception exception)
+    {
+        try { logger.LogError(message, exception); }
+        catch (Exception) { }
+    }
+
+    private void RecoverReadyStateAfterCleanup()
+    {
+        if (disposed || previewService.IsActive || SelectedDevice is null || SelectedFormat is null) return;
+        if (SessionState == CaptureSessionState.Faulted) TryTransition(CaptureSessionState.DeviceReady);
+    }
 
     private void NotifyCaptureProperties()
     {

@@ -1,6 +1,4 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
-using HdmiCaptureCardMonitor.Capture.Diagnostics;
 using HdmiCaptureCardMonitor.Capture.Interop;
 using HdmiCaptureCardMonitor.Models;
 using Windows.Win32;
@@ -42,57 +40,33 @@ internal sealed class D3D11PreviewRenderer : IDisposable
     private ID3D11VideoProcessorOutputView? outputView;
     private ID3D11RenderTargetView? renderTargetView;
     private PreviewSurfaceSize outputSize;
-    private bool disposed;
+    private int disposed;
 
     private D3D11PreviewRenderer(
         NativeVideoCapability sourceFormat,
-        PreviewSurfaceSize initialSize,
-        nint targetWindow,
         PreviewDriverType driverType,
         ID3D11Device device,
-        ID3D11DeviceContext context)
+        ID3D11DeviceContext context,
+        ID3D11VideoDevice videoDevice,
+        ID3D11VideoContext videoContext,
+        IDXGIDevice dxgiDevice,
+        IDXGIAdapter adapter,
+        IDXGIFactory2 factory,
+        IDXGISwapChain1 swapChain,
+        IMFDXGIDeviceManager deviceManager)
     {
         this.sourceFormat = sourceFormat;
         DriverType = driverType;
         this.device = device;
         this.context = context;
-        videoDevice = device as ID3D11VideoDevice ?? throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The graphics device does not support video processing.");
-        videoContext = context as ID3D11VideoContext ?? throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The graphics context does not support video processing.");
-        dxgiDevice = device as IDXGIDevice ?? throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The graphics device does not expose DXGI.");
-        dxgiDevice.GetAdapter(out adapter);
-
-        unsafe
-        {
-            var factoryId = typeof(IDXGIFactory2).GUID;
-            adapter.GetParent(&factoryId, out var factoryObject);
-            factory = (IDXGIFactory2)factoryObject;
-
-            var size = initialSize.IsEmpty ? new PreviewSurfaceSize(1, 1) : initialSize;
-            var description = new DXGI_SWAP_CHAIN_DESC1
-            {
-                Width = (uint)size.PixelWidth,
-                Height = (uint)size.PixelHeight,
-                Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
-                Stereo = false,
-                SampleDesc = new DXGI_SAMPLE_DESC { Count = 1, Quality = 0 },
-                BufferUsage = DXGI_USAGE.DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount = 2,
-                Scaling = DXGI_SCALING.DXGI_SCALING_STRETCH,
-                SwapEffect = DXGI_SWAP_EFFECT.DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                AlphaMode = DXGI_ALPHA_MODE.DXGI_ALPHA_MODE_IGNORE,
-                Flags = DXGI_SWAP_CHAIN_FLAG.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
-            };
-            factory.CreateSwapChainForHwnd(device, new HWND((void*)targetWindow), &description, null, null!, out swapChain);
-        }
-
+        this.videoDevice = videoDevice;
+        this.videoContext = videoContext;
+        this.dxgiDevice = dxgiDevice;
+        this.adapter = adapter;
+        this.factory = factory;
+        this.swapChain = swapChain;
         swapChain2 = swapChain as IDXGISwapChain2;
-        swapChain2?.SetMaximumFrameLatency(1);
-        RecreateOutputResources(initialSize);
-
-        var managerResult = PInvoke.MFCreateDXGIDeviceManager(out var resetToken, out var manager);
-        if (managerResult.Failed) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The Media Foundation graphics-device manager could not be created.", managerResult.Value);
-        DeviceManager = manager;
-        DeviceManager.ResetDevice(device, resetToken);
+        DeviceManager = deviceManager;
     }
 
     public PreviewDriverType DriverType { get; }
@@ -101,23 +75,29 @@ internal sealed class D3D11PreviewRenderer : IDisposable
 
     public static D3D11PreviewRenderer Create(NativeVideoCapability sourceFormat, PreviewSurfaceSize initialSize, nint targetWindow)
     {
-        if (targetWindow == 0) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The preview surface is unavailable.");
-        var flags = D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-        var hardware = TryCreateDevice(D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE, flags);
-        if (hardware is not null) return new D3D11PreviewRenderer(sourceFormat, initialSize, targetWindow, PreviewDriverType.Hardware, hardware.Value.Device, hardware.Value.Context);
+        if (targetWindow == 0 || initialSize.IsEmpty)
+            throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The preview surface is unavailable or has no drawable area.");
 
-        var warp = TryCreateDevice(D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP, flags);
-        if (warp is not null) return new D3D11PreviewRenderer(sourceFormat, initialSize, targetWindow, PreviewDriverType.Warp, warp.Value.Device, warp.Value.Context);
-        throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "Windows could not create a Direct3D 11 video device.");
+        PreviewNativeException? lastFailure = null;
+        var hardware = TryCreateRenderer(sourceFormat, initialSize, targetWindow, D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE, PreviewDriverType.Hardware, out var hardwareFailure);
+        if (hardware is not null) return hardware;
+        lastFailure = hardwareFailure;
+
+        var warp = TryCreateRenderer(sourceFormat, initialSize, targetWindow, D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP, PreviewDriverType.Warp, out var warpFailure);
+        if (warp is not null) return warp;
+        lastFailure = warpFailure ?? lastFailure;
+
+        throw lastFailure ?? CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "Windows could not create a Direct3D 11 video device.");
     }
 
     public void RequestResize(PreviewSurfaceSize size) => resizeRequests.Post(size);
 
-    public unsafe bool Render(IMFDXGIBuffer dxgiBuffer, PreviewDiagnosticsTracker diagnostics)
+    public unsafe PreviewRenderOutcome Render(IMFDXGIBuffer dxgiBuffer)
     {
-        ObjectDisposedException.ThrowIf(disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         if (resizeRequests.TryTake(out var requestedSize)) RecreateOutputResources(requestedSize);
-        if (outputSize.IsEmpty || processorEnumerator is null || processor is null || outputView is null || renderTargetView is null) return false;
+        if (outputSize.IsEmpty || processorEnumerator is null || processor is null || outputView is null || renderTargetView is null)
+            return PreviewRenderOutcome.SurfaceUnavailable;
 
         void* resourcePointer = null;
         ID3D11Texture2D? inputTexture = null;
@@ -140,10 +120,16 @@ internal sealed class D3D11PreviewRenderer : IDisposable
             inputDescription.Texture2D.MipSlice = 0;
             inputDescription.Texture2D.ArraySlice = subresourceIndex;
             ID3D11VideoProcessorInputView_unmanaged* rawInputView = null;
-            videoDevice.CreateVideoProcessorInputView((ID3D11Resource)inputTexture, processorEnumerator, &inputDescription, &rawInputView);
-            if (rawInputView is null) throw CreateFailure(PreviewFailureCategory.UnsupportedGpuBuffer, "The decoded frame could not be bound to the GPU video processor.");
-            inputView = WrapComPointer<ID3D11VideoProcessorInputView>(rawInputView);
-            rawInputView->Release();
+            try
+            {
+                videoDevice.CreateVideoProcessorInputView((ID3D11Resource)inputTexture, processorEnumerator, &inputDescription, &rawInputView);
+                if (rawInputView is null) throw CreateFailure(PreviewFailureCategory.UnsupportedGpuBuffer, "The decoded frame could not be bound to the GPU video processor.");
+                inputView = WrapComPointer<ID3D11VideoProcessorInputView>(rawInputView);
+            }
+            finally
+            {
+                if (rawInputView is not null) rawInputView->Release();
+            }
 
             context.ClearRenderTargetView(renderTargetView, Black);
             var sourceWidth = checked((int)sourceFormat.Width);
@@ -166,18 +152,11 @@ internal sealed class D3D11PreviewRenderer : IDisposable
             };
             videoContext.VideoProcessorBlt(processor, outputView, 0, 1, [stream]);
             var presentResult = swapChain.Present(0, DXGI_PRESENT.DXGI_PRESENT_DO_NOT_WAIT);
-            if (presentResult.Value == DxgiErrorWasStillDrawing)
-            {
-                diagnostics.RecordPresentationFailure();
-                return false;
-            }
+            if (presentResult.Value == DxgiErrorWasStillDrawing) return PreviewRenderOutcome.WasStillDrawing;
             if (presentResult.Failed)
-            {
-                diagnostics.RecordPresentationFailure();
                 throw CreateFailure(MapPresentationFailure(presentResult.Value), "The preview frame could not be presented.", presentResult.Value);
-            }
 
-            return true;
+            return PreviewRenderOutcome.Presented;
         }
         catch (COMException exception)
         {
@@ -186,46 +165,151 @@ internal sealed class D3D11PreviewRenderer : IDisposable
         finally
         {
             if (resourcePointer is not null) Marshal.Release((nint)resourcePointer);
-            ReleaseComObject(inputView);
-            ReleaseComObject(inputTexture);
+            SafeRelease(inputView);
+            SafeRelease(inputTexture);
         }
     }
 
     public void Dispose()
     {
-        if (disposed) return;
-        disposed = true;
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         ReleaseOutputResources();
-        ReleaseComObject(DeviceManager);
-        ReleaseComObject(swapChain);
-        ReleaseComObject(factory);
-        ReleaseComObject(adapter);
-        ReleaseComObject(context);
-        ReleaseComObject(device);
+        SafeRelease(DeviceManager);
+        SafeRelease(swapChain);
+        SafeRelease(factory);
+        SafeRelease(adapter);
+        SafeRelease(context);
+        SafeRelease(device);
     }
 
-    private static (ID3D11Device Device, ID3D11DeviceContext Context)? TryCreateDevice(D3D_DRIVER_TYPE driverType, D3D11_CREATE_DEVICE_FLAG flags)
+    private static D3D11PreviewRenderer? TryCreateRenderer(
+        NativeVideoCapability sourceFormat,
+        PreviewSurfaceSize initialSize,
+        nint targetWindow,
+        D3D_DRIVER_TYPE nativeDriverType,
+        PreviewDriverType diagnosticDriverType,
+        out PreviewNativeException? failure)
     {
-        var result = PInvoke.D3D11CreateDevice(null!, driverType, default, flags, FeatureLevels, PInvoke.D3D11_SDK_VERSION, out var device, out _, out var context);
-        return result.Failed ? null : (device, context);
+        failure = null;
+        var flags = D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+        var result = PInvoke.D3D11CreateDevice(null!, nativeDriverType, default, flags, FeatureLevels, PInvoke.D3D11_SDK_VERSION, out var device, out _, out var context);
+        if (result.Failed || device is null || context is null)
+        {
+            SafeRelease(context);
+            SafeRelease(device);
+            return null;
+        }
+
+        using var ownership = new NativeConstructionScope();
+        ownership.Own(device, SafeRelease);
+        ownership.Own(context, SafeRelease);
+
+        try
+        {
+            var videoDevice = device as ID3D11VideoDevice ?? throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The graphics device does not support video processing.");
+            var videoContext = context as ID3D11VideoContext ?? throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The graphics context does not support video processing.");
+            var dxgiDevice = device as IDXGIDevice ?? throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The graphics device does not expose DXGI.");
+            dxgiDevice.GetAdapter(out var adapter);
+            if (adapter is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The graphics adapter could not be resolved.");
+            ownership.Own(adapter, SafeRelease);
+
+            IDXGIFactory2 factory;
+            unsafe
+            {
+                var factoryId = typeof(IDXGIFactory2).GUID;
+                adapter.GetParent(&factoryId, out var factoryObject);
+                if (factoryObject is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The DXGI factory could not be resolved.");
+                ownership.Own(factoryObject, SafeRelease);
+                factory = factoryObject as IDXGIFactory2 ?? throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The DXGI factory could not be resolved.");
+            }
+
+            IDXGISwapChain1 swapChain;
+            unsafe
+            {
+                var description = new DXGI_SWAP_CHAIN_DESC1
+                {
+                    Width = (uint)initialSize.PixelWidth,
+                    Height = (uint)initialSize.PixelHeight,
+                    Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                    Stereo = false,
+                    SampleDesc = new DXGI_SAMPLE_DESC { Count = 1, Quality = 0 },
+                    BufferUsage = DXGI_USAGE.DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                    BufferCount = 2,
+                    Scaling = DXGI_SCALING.DXGI_SCALING_STRETCH,
+                    SwapEffect = DXGI_SWAP_EFFECT.DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                    AlphaMode = DXGI_ALPHA_MODE.DXGI_ALPHA_MODE_IGNORE,
+                    Flags = DXGI_SWAP_CHAIN_FLAG.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+                };
+                factory.CreateSwapChainForHwnd(device, new HWND((void*)targetWindow), &description, null, null!, out swapChain);
+            }
+            if (swapChain is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The preview swap chain was not created.");
+            ownership.Own(swapChain, SafeRelease);
+            (swapChain as IDXGISwapChain2)?.SetMaximumFrameLatency(1);
+
+            var managerResult = PInvoke.MFCreateDXGIDeviceManager(out var resetToken, out var manager);
+            if (managerResult.Failed || manager is null)
+                throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The Media Foundation graphics-device manager could not be created.", managerResult.Value);
+            ownership.Own(manager, SafeRelease);
+            manager.ResetDevice(device, resetToken);
+
+            var renderer = new D3D11PreviewRenderer(
+                sourceFormat,
+                diagnosticDriverType,
+                device,
+                context,
+                videoDevice,
+                videoContext,
+                dxgiDevice,
+                adapter,
+                factory,
+                swapChain,
+                manager);
+            ownership.Commit();
+            try
+            {
+                renderer.RecreateOutputResources(initialSize);
+                return renderer;
+            }
+            catch
+            {
+                renderer.Dispose();
+                throw;
+            }
+        }
+        catch (PreviewNativeException exception)
+        {
+            failure = exception;
+            return null;
+        }
+        catch (COMException exception)
+        {
+            failure = CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The Direct3D preview pipeline could not be constructed.", exception.HResult, exception);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            failure = CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The Direct3D preview pipeline could not be constructed.", null, exception);
+            return null;
+        }
     }
 
     private unsafe void RecreateOutputResources(PreviewSurfaceSize size)
     {
         outputSize = size;
+        ReleaseOutputResources();
         if (size.IsEmpty) return;
 
-        ReleaseOutputResources();
-        swapChain.ResizeBuffers(
-            2,
-            (uint)size.PixelWidth,
-            (uint)size.PixelHeight,
-            DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
-            DXGI_SWAP_CHAIN_FLAG.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+        swapChain.ResizeBuffers(2, (uint)size.PixelWidth, (uint)size.PixelHeight, DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SWAP_CHAIN_FLAG.DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
 
         var textureId = typeof(ID3D11Texture2D).GUID;
         swapChain.GetBuffer(0, &textureId, out var bufferObject);
-        backBuffer = (ID3D11Texture2D)bufferObject;
+        if (bufferObject is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The swap-chain back buffer was not created.");
+        backBuffer = bufferObject as ID3D11Texture2D;
+        if (backBuffer is null)
+        {
+            SafeRelease(bufferObject);
+            throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The swap-chain back buffer was not created.");
+        }
 
         var contentDescription = new D3D11_VIDEO_PROCESSOR_CONTENT_DESC
         {
@@ -233,55 +317,78 @@ internal sealed class D3D11PreviewRenderer : IDisposable
                 ? D3D11_VIDEO_FRAME_FORMAT.D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST
                 : D3D11_VIDEO_FRAME_FORMAT.D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
             InputFrameRate = new DXGI_RATIONAL { Numerator = sourceFormat.FrameRateNumerator, Denominator = sourceFormat.FrameRateDenominator },
-            InputWidth = (uint)sourceFormat.Width,
-            InputHeight = (uint)sourceFormat.Height,
+            InputWidth = sourceFormat.Width,
+            InputHeight = sourceFormat.Height,
             OutputFrameRate = new DXGI_RATIONAL { Numerator = sourceFormat.FrameRateNumerator, Denominator = sourceFormat.FrameRateDenominator },
             OutputWidth = (uint)size.PixelWidth,
             OutputHeight = (uint)size.PixelHeight,
             Usage = D3D11_VIDEO_USAGE.D3D11_VIDEO_USAGE_OPTIMAL_SPEED
         };
         videoDevice.CreateVideoProcessorEnumerator(&contentDescription, out processorEnumerator);
+        if (processorEnumerator is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The video-processor enumerator was not created.");
         videoDevice.CreateVideoProcessor(processorEnumerator, 0, out processor);
+        if (processor is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The video processor was not created.");
         videoContext.VideoProcessorSetStreamFrameFormat(processor, 0, contentDescription.InputFrameFormat);
 
-        var outputDescription = new D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC
-        {
-            ViewDimension = D3D11_VPOV_DIMENSION.D3D11_VPOV_DIMENSION_TEXTURE2D
-        };
+        var outputDescription = new D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC { ViewDimension = D3D11_VPOV_DIMENSION.D3D11_VPOV_DIMENSION_TEXTURE2D };
         outputDescription.Texture2D.MipSlice = 0;
         ID3D11VideoProcessorOutputView_unmanaged* rawOutputView = null;
-        videoDevice.CreateVideoProcessorOutputView((ID3D11Resource)backBuffer, processorEnumerator, &outputDescription, &rawOutputView);
-        if (rawOutputView is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The swap-chain video output could not be created.");
-        outputView = WrapComPointer<ID3D11VideoProcessorOutputView>(rawOutputView);
-        rawOutputView->Release();
+        try
+        {
+            videoDevice.CreateVideoProcessorOutputView((ID3D11Resource)backBuffer, processorEnumerator, &outputDescription, &rawOutputView);
+            if (rawOutputView is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The swap-chain video output could not be created.");
+            outputView = WrapComPointer<ID3D11VideoProcessorOutputView>(rawOutputView);
+        }
+        finally
+        {
+            if (rawOutputView is not null) rawOutputView->Release();
+        }
 
         ID3D11RenderTargetView_unmanaged* rawRenderTarget = null;
-        device.CreateRenderTargetView((ID3D11Resource)backBuffer, null, &rawRenderTarget);
-        if (rawRenderTarget is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The swap-chain render target could not be created.");
-        renderTargetView = WrapComPointer<ID3D11RenderTargetView>(rawRenderTarget);
-        rawRenderTarget->Release();
+        try
+        {
+            device.CreateRenderTargetView((ID3D11Resource)backBuffer, null, &rawRenderTarget);
+            if (rawRenderTarget is null) throw CreateFailure(PreviewFailureCategory.D3DInitializationFailure, "The swap-chain render target could not be created.");
+            renderTargetView = WrapComPointer<ID3D11RenderTargetView>(rawRenderTarget);
+        }
+        finally
+        {
+            if (rawRenderTarget is not null) rawRenderTarget->Release();
+        }
     }
 
     private void ReleaseOutputResources()
     {
-        ReleaseComObject(renderTargetView);
+        var currentRenderTarget = renderTargetView;
         renderTargetView = null;
-        ReleaseComObject(outputView);
+        SafeRelease(currentRenderTarget);
+        var currentOutputView = outputView;
         outputView = null;
-        ReleaseComObject(backBuffer);
+        SafeRelease(currentOutputView);
+        var currentBackBuffer = backBuffer;
         backBuffer = null;
-        ReleaseComObject(processor);
+        SafeRelease(currentBackBuffer);
+        var currentProcessor = processor;
         processor = null;
-        ReleaseComObject(processorEnumerator);
+        SafeRelease(currentProcessor);
+        var currentEnumerator = processorEnumerator;
         processorEnumerator = null;
-        context.Flush();
+        SafeRelease(currentEnumerator);
+        try { context.Flush(); }
+        catch (COMException) { }
+        catch (InvalidComObjectException) { }
     }
 
     private static unsafe T WrapComPointer<T>(void* pointer) where T : class => (T)Marshal.GetObjectForIUnknown((nint)pointer);
 
-    private static void ReleaseComObject(object? value)
+    private static void SafeRelease(object? value)
     {
-        if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+        try
+        {
+            if (value is not null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
+        }
+        catch (InvalidComObjectException) { }
+        catch (COMException) { }
     }
 
     private static PreviewNativeException CreateFailure(PreviewFailureCategory category, string message, int? hresult = null, Exception? exception = null) =>

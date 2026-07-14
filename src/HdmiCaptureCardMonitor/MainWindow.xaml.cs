@@ -13,6 +13,8 @@ public partial class MainWindow : Window
         var viewModel = new MainWindowViewModel(logger, startupNotice, discoveryService: discoveryService, previewService: previewService, previewSurface: PreviewHost);
         DataContext = viewModel;
         Loaded += (_, _) => viewModel.StartInitialDiscovery();
+        StateChanged += (_, _) => PreviewHost.SetWindowMinimized(WindowState == WindowState.Minimized);
+        Closing += (_, _) => viewModel.Dispose();
         Closed += (_, _) => viewModel.Dispose();
     }
 }

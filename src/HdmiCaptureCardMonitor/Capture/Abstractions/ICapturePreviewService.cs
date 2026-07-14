@@ -5,6 +5,7 @@ namespace HdmiCaptureCardMonitor.Capture.Abstractions;
 public interface ICapturePreviewService : IDisposable
 {
     bool IsActive { get; }
+    event EventHandler? IsActiveChanged;
     event EventHandler<PreviewSessionEventArgs>? FirstFramePresented;
     event EventHandler<PreviewDiagnosticsEventArgs>? DiagnosticsUpdated;
     event EventHandler<PreviewFailureEventArgs>? PreviewFailed;

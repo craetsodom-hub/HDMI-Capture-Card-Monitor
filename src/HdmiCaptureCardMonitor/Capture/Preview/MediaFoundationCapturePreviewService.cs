@@ -14,6 +14,7 @@ internal sealed class MediaFoundationCapturePreviewService(IApplicationLogger lo
     public bool IsActive { get { lock (syncRoot) return activeSession is not null; } }
     public bool WorkersSettled { get { lock (syncRoot) return activeSession is null || activeSession.IsCompleted; } }
 
+    public event EventHandler? IsActiveChanged;
     public event EventHandler<PreviewSessionEventArgs>? FirstFramePresented;
     public event EventHandler<PreviewDiagnosticsEventArgs>? DiagnosticsUpdated;
     public event EventHandler<PreviewFailureEventArgs>? PreviewFailed;
@@ -36,6 +37,7 @@ internal sealed class MediaFoundationCapturePreviewService(IApplicationLogger lo
             Subscribe(session);
             activeSession = session;
         }
+        IsActiveChanged?.Invoke(this, EventArgs.Empty);
 
         var result = await session.StartAsync().ConfigureAwait(false);
         if (!result.IsSuccess)
@@ -43,6 +45,8 @@ internal sealed class MediaFoundationCapturePreviewService(IApplicationLogger lo
             var stopResult = await session.StopAsync().ConfigureAwait(false);
             if (!stopResult.TimedOut) ClearIfCurrent(session);
             else _ = ClearWhenCompletedAsync(session);
+            if (stopResult.TimedOut)
+                return PreviewStartResult.Failed(session.SessionId, stopResult.Failure!);
         }
         return result;
     }
@@ -68,7 +72,11 @@ internal sealed class MediaFoundationCapturePreviewService(IApplicationLogger lo
         }
 
         var result = StopAsync().GetAwaiter().GetResult();
-        if (result.TimedOut) logger.Warning("The preview service retained its native session because bounded shutdown timed out.");
+        if (result.TimedOut)
+        {
+            try { logger.Warning("The preview service retained its native session because bounded shutdown timed out."); }
+            catch (Exception) { }
+        }
     }
 
     private void Subscribe(MediaFoundationPreviewSession session)
@@ -87,12 +95,15 @@ internal sealed class MediaFoundationCapturePreviewService(IApplicationLogger lo
 
     private void ClearIfCurrent(MediaFoundationPreviewSession session)
     {
+        var changed = false;
         lock (syncRoot)
         {
             if (!ReferenceEquals(activeSession, session)) return;
             Unsubscribe(session);
             activeSession = null;
+            changed = true;
         }
+        if (changed) IsActiveChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private async Task ClearWhenCompletedAsync(MediaFoundationPreviewSession session)

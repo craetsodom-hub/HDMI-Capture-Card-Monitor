@@ -15,7 +15,7 @@ public sealed class CaptureSessionStateMachineTests
             [CaptureSessionState.Recording] = Set(CaptureSessionState.Previewing, CaptureSessionState.Reconnecting, CaptureSessionState.Stopping, CaptureSessionState.Faulted),
             [CaptureSessionState.Reconnecting] = Set(CaptureSessionState.DeviceReady, CaptureSessionState.Starting, CaptureSessionState.Stopping, CaptureSessionState.Faulted),
             [CaptureSessionState.Stopping] = Set(CaptureSessionState.Idle, CaptureSessionState.DeviceReady, CaptureSessionState.Faulted),
-            [CaptureSessionState.Faulted] = Set(CaptureSessionState.Idle, CaptureSessionState.Enumerating)
+            [CaptureSessionState.Faulted] = Set(CaptureSessionState.Idle, CaptureSessionState.Enumerating, CaptureSessionState.DeviceReady)
         };
 
     public static IEnumerable<object[]> EveryStatePair =>
@@ -81,6 +81,15 @@ public sealed class CaptureSessionStateMachineTests
         Transition(machine, CaptureSessionState.Faulted);
         Transition(machine, CaptureSessionState.Enumerating);
         Transition(machine, CaptureSessionState.DeviceReady);
+    }
+
+    [Fact]
+    public void SupportsPreviewRetryAfterCleanupWithSelectionsStillValid()
+    {
+        var machine = MoveTo(CaptureSessionState.Previewing);
+        Transition(machine, CaptureSessionState.Faulted);
+        Transition(machine, CaptureSessionState.DeviceReady);
+        Transition(machine, CaptureSessionState.Starting);
     }
 
     [Fact]

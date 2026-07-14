@@ -30,7 +30,10 @@ internal sealed class MediaFoundationPreviewSession
     private bool registrationCreated;
     private bool readerReleased;
     private PreviewFailure? asynchronousFailure;
-    private long lastPresentedUtcTicks;
+    private long sessionStartedTimestamp;
+    private long lastSampleTimestamp;
+    private long lastPresentedTimestamp;
+    private int surfacePresentable;
     private int firstFramePresented;
     private int finished;
     private int stopping;
@@ -107,7 +110,7 @@ internal sealed class MediaFoundationPreviewSession
         catch (TimeoutException exception)
         {
             var failure = new PreviewFailure(PreviewFailureCategory.ShutdownTimeout, "Preview shutdown exceeded the three-second safety bound.", null, exception);
-            logger.Warning("Preview shutdown exceeded the three-second safety bound; native ownership remains with the preview thread.");
+            SafeLogWarning("Preview shutdown exceeded the three-second safety bound; native ownership remains with the preview thread.");
             return PreviewStopResult.Timeout(failure);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -133,7 +136,11 @@ internal sealed class MediaFoundationPreviewSession
 
         try
         {
-            Volatile.Write(ref lastPresentedUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+            sessionStartedTimestamp = Stopwatch.GetTimestamp();
+            Volatile.Write(ref lastPresentedTimestamp, sessionStartedTimestamp);
+            Volatile.Write(ref surfacePresentable, request.Surface.IsPresentable ? 1 : 0);
+            if (!request.Surface.IsAvailable || !request.Surface.IsPresentable || request.Surface.PixelSize.IsEmpty)
+                throw Failure(PreviewFailureCategory.D3DInitializationFailure, "The preview surface is unavailable or has no drawable area.");
             stallWatchdog = new Timer(CheckForPreviewStall, null, StallThreshold, TimeSpan.FromMilliseconds(500));
             var apartmentResult = PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED);
             if (apartmentResult.Failed) throw Failure(PreviewFailureCategory.Unknown, "The preview thread could not initialize COM.", apartmentResult.Value);
@@ -143,6 +150,7 @@ internal sealed class MediaFoundationPreviewSession
             renderer = D3D11PreviewRenderer.Create(request.NativeFormat, request.Surface.PixelSize, request.Surface.Handle);
             Volatile.Write(ref activeRenderer, renderer);
             request.Surface.PixelSizeChanged += OnSurfaceSizeChanged;
+            request.Surface.PresentabilityChanged += OnSurfacePresentabilityChanged;
             surfaceSubscribed = true;
 
             var createActivation = PInvoke.MFCreateAttributes(out activationAttributes, 2);
@@ -194,7 +202,16 @@ internal sealed class MediaFoundationPreviewSession
                 throw Failure(PreviewFailureCategory.UnsupportedPreviewFormat, "The selected format did not negotiate GPU-compatible NV12 output.");
             }
 
-            diagnostics.SetNegotiation(request.NativeFormat.DisplayLabel, "NV12", renderer.DriverType);
+            var negotiatedOutput = ReadNegotiatedOutput(actualOutputType);
+            diagnostics.SetNegotiation(
+                request.NativeFormat.DisplayLabel,
+                negotiatedOutput.Subtype,
+                renderer.DriverType,
+                negotiatedOutput.Width,
+                negotiatedOutput.Height,
+                negotiatedOutput.FrameRateNumerator,
+                negotiatedOutput.FrameRateDenominator,
+                negotiatedOutput.InterlaceMode);
             lock (syncRoot)
             {
                 if (cancellation.IsCancellationRequested) throw new OperationCanceledException(cancellation.Token);
@@ -235,35 +252,56 @@ internal sealed class MediaFoundationPreviewSession
         finally
         {
             Volatile.Write(ref finished, 1);
-            stallWatchdog?.Dispose();
             startup.TrySetResult(cancellation.IsCancellationRequested
                 ? PreviewStartResult.Cancelled(SessionId)
                 : PreviewStartResult.Failed(SessionId, new PreviewFailure(PreviewFailureCategory.Unknown, "Preview startup did not complete.")));
 
-            if (surfaceSubscribed) request.Surface.PixelSizeChanged -= OnSurfaceSizeChanged;
-            Volatile.Write(ref activeRenderer, null);
-            if (registrationCreated) requestCancellationRegistration.Dispose();
-            lock (syncRoot)
+            var cleanupSteps = new List<PreviewCleanupStep>
             {
-                publishedReader = null;
-                readerReleased = true;
-            }
+                new("stall-watchdog disposal", () => stallWatchdog?.Dispose()),
+                new("surface event removal", () =>
+                {
+                    if (!surfaceSubscribed) return;
+                    request.Surface.PixelSizeChanged -= OnSurfaceSizeChanged;
+                    request.Surface.PresentabilityChanged -= OnSurfacePresentabilityChanged;
+                }),
+                new("cancellation-registration disposal", () =>
+                {
+                    if (registrationCreated) requestCancellationRegistration.Dispose();
+                }),
+                new("published Source Reader retirement", () =>
+                {
+                    Volatile.Write(ref activeRenderer, null);
+                    lock (syncRoot)
+                    {
+                        publishedReader = null;
+                        readerReleased = true;
+                    }
+                }),
+                new("final diagnostics logging", LogFinalDiagnostics),
+                new("actual output media-type release", () => ReleaseComObject(actualOutputType)),
+                new("requested output media-type release", () => ReleaseComObject(outputType)),
+                new("native media-type release", () => ReleaseComObject(nativeType)),
+                new("Source Reader release", () => ReleaseComObject(reader)),
+                new(
+                    "media-source shutdown",
+                    () => mediaSource?.Shutdown(),
+                    exception => exception.HResult == MediaFoundationHResults.Shutdown),
+                new("media-source release", () => ReleaseComObject(mediaSource)),
+                new("reader attributes release", () => ReleaseComObject(readerAttributes)),
+                new("activation attributes release", () => ReleaseComObject(activationAttributes)),
+                new("renderer disposal", () => renderer?.Dispose()),
+                new("COM apartment uninitialization", () =>
+                {
+                    if (apartmentInitialized) PInvoke.CoUninitialize();
+                })
+            };
 
-            var finalDiagnostics = diagnostics.CreateSnapshot(DateTimeOffset.UtcNow);
-            logger.Information($"Preview diagnostics: device='{finalDiagnostics.DeviceDisplayName}'; native='{finalDiagnostics.ActualNativeFormat}'; output={finalDiagnostics.NegotiatedOutputSubtype}; driver={finalDiagnostics.DriverType}; received={finalDiagnostics.FramesReceived}; rendered={finalDiagnostics.FramesRendered}; fps={finalDiagnostics.RenderedFramesPerSecond:F1}; average-processing-ms={finalDiagnostics.AverageProcessingMilliseconds:F2}; p95-processing-ms={finalDiagnostics.P95ProcessingMilliseconds:F2}; null-samples={finalDiagnostics.NullSamples}; stream-ticks={finalDiagnostics.StreamTicks}; presentation-failures={finalDiagnostics.PresentationFailures}; last-failure={finalDiagnostics.LastFailureCategory?.ToString() ?? "none"}.");
-
-            ReleaseComObject(actualOutputType);
-            ReleaseComObject(outputType);
-            ReleaseComObject(nativeType);
-            ReleaseComObject(reader);
-            ShutdownMediaSource(mediaSource);
-            ReleaseComObject(mediaSource);
-            ReleaseComObject(readerAttributes);
-            ReleaseComObject(activationAttributes);
-            renderer?.Dispose();
-            if (apartmentInitialized) PInvoke.CoUninitialize();
-            completion.TrySetResult(true);
-            cancellation.Dispose();
+            PreviewSessionCleanup.Execute(
+                cleanupSteps,
+                ReportCleanupFailure,
+                cancellation.Dispose,
+                () => completion.TrySetResult(true));
         }
     }
 
@@ -276,12 +314,14 @@ internal sealed class MediaFoundationPreviewSession
             IMFSample_unmanaged* sample = null;
             IMFMediaBuffer_unmanaged* buffer = null;
             IMFDXGIBuffer? dxgiBuffer = null;
+            Stopwatch? sampleReturnToPresent = null;
 
             try
             {
                 try
                 {
                     reader.ReadSample(streamIndex, 0, null, &flags, &timestamp, &sample);
+                    sampleReturnToPresent = Stopwatch.StartNew();
                 }
                 catch (COMException) when (cancellation.IsCancellationRequested)
                 {
@@ -302,7 +342,16 @@ internal sealed class MediaFoundationPreviewSession
                     continue;
                 }
 
-                diagnostics.RecordReceived(timestamp);
+                var sampleArrivalTimestamp = Stopwatch.GetTimestamp();
+                Volatile.Write(ref lastSampleTimestamp, sampleArrivalTimestamp);
+                diagnostics.RecordReceived(timestamp, Stopwatch.GetElapsedTime(sessionStartedTimestamp, sampleArrivalTimestamp));
+                if (Volatile.Read(ref surfacePresentable) == 0 || !request.Surface.IsPresentable)
+                {
+                    diagnostics.RecordSurfaceUnavailableSkip();
+                    PublishDiagnosticsIfDue();
+                    continue;
+                }
+
                 sample->GetBufferCount(out var bufferCount);
                 if (bufferCount == 1) sample->GetBufferByIndex(0, out buffer);
                 else sample->ConvertToContiguousBuffer(out buffer);
@@ -315,15 +364,36 @@ internal sealed class MediaFoundationPreviewSession
                 }
 
                 var processing = Stopwatch.StartNew();
-                if (!renderer.Render(dxgiBuffer, diagnostics))
+                PreviewRenderOutcome renderOutcome;
+                try { renderOutcome = renderer.Render(dxgiBuffer); }
+                catch (PreviewNativeException exception) when (exception.Failure.Category is PreviewFailureCategory.PresentationFailure or PreviewFailureCategory.DeviceRemoved)
                 {
+                    diagnostics.RecordPresentationFailure();
+                    throw;
+                }
+
+                if (renderOutcome == PreviewRenderOutcome.SurfaceUnavailable)
+                {
+                    diagnostics.RecordSurfaceUnavailableSkip();
+                    PublishDiagnosticsIfDue();
+                    continue;
+                }
+                if (renderOutcome == PreviewRenderOutcome.WasStillDrawing)
+                {
+                    diagnostics.RecordPresentWasStillDrawing();
                     PublishDiagnosticsIfDue();
                     continue;
                 }
                 processing.Stop();
+                sampleReturnToPresent?.Stop();
+                var presentedTimestamp = Stopwatch.GetTimestamp();
                 var presentedAt = DateTimeOffset.UtcNow;
-                Volatile.Write(ref lastPresentedUtcTicks, presentedAt.UtcTicks);
-                diagnostics.RecordRendered(processing.Elapsed, presentedAt);
+                Volatile.Write(ref lastPresentedTimestamp, presentedTimestamp);
+                diagnostics.RecordRendered(
+                    processing.Elapsed,
+                    sampleReturnToPresent?.Elapsed ?? processing.Elapsed,
+                    Stopwatch.GetElapsedTime(sessionStartedTimestamp, presentedTimestamp),
+                    presentedAt);
                 if (Interlocked.Exchange(ref firstFramePresented, 1) == 0)
                 {
                     FirstFramePresented?.Invoke(this, new PreviewSessionEventArgs(SessionId));
@@ -345,18 +415,32 @@ internal sealed class MediaFoundationPreviewSession
     {
         _ = state;
         if (Volatile.Read(ref finished) != 0 || cancellation.IsCancellationRequested) return;
-        var lastFrameTicks = Volatile.Read(ref lastPresentedUtcTicks);
-        if (lastFrameTicks == 0 || DateTimeOffset.UtcNow.UtcTicks - lastFrameTicks <= StallThreshold.Ticks) return;
-
+        var now = Stopwatch.GetTimestamp();
+        var sampleTimestamp = Volatile.Read(ref lastSampleTimestamp);
+        var presentationTimestamp = Volatile.Read(ref lastPresentedTimestamp);
         var firstFrameWasPresented = Volatile.Read(ref firstFramePresented) != 0;
-        var failure = firstFrameWasPresented
-            ? new PreviewFailure(PreviewFailureCategory.PreviewStalled, "The video input stopped delivering frames.")
-            : new PreviewFailure(PreviewFailureCategory.StartupTimeout, "The video input did not deliver its first frame in time.");
+        var category = PreviewWatchdogPolicy.Evaluate(
+            Stopwatch.GetElapsedTime(sessionStartedTimestamp, now),
+            sampleTimestamp == 0 ? null : Stopwatch.GetElapsedTime(sampleTimestamp, now),
+            presentationTimestamp == 0 ? null : Stopwatch.GetElapsedTime(presentationTimestamp, now),
+            Volatile.Read(ref surfacePresentable) != 0,
+            firstFrameWasPresented,
+            StallThreshold);
+        if (category is null) return;
+
+        var failure = category switch
+        {
+            PreviewFailureCategory.PreviewStalled => new PreviewFailure(category.Value, "The video input stopped delivering samples."),
+            PreviewFailureCategory.PresentationFailure => new PreviewFailure(category.Value, "Video samples arrived, but the visible preview could not present them."),
+            _ => new PreviewFailure(PreviewFailureCategory.StartupTimeout, "The video input did not deliver its first sample in time.")
+        };
         if (Interlocked.CompareExchange(ref asynchronousFailure, failure, null) is not null) return;
         startup.TrySetResult(PreviewStartResult.Failed(SessionId, failure));
-        logger.Warning(firstFrameWasPresented
-            ? "The preview stall watchdog requested bounded shutdown after three seconds without a presented frame."
-            : "The preview startup watchdog requested bounded shutdown after three seconds without a first frame.");
+        SafeLogWarning(category == PreviewFailureCategory.PresentationFailure
+            ? "The preview watchdog requested bounded shutdown because samples arrived but a presentable surface did not present for three seconds."
+            : firstFrameWasPresented
+                ? "The preview watchdog requested bounded shutdown after three seconds without a video sample."
+                : "The preview startup watchdog requested bounded shutdown after three seconds without a first sample.");
         RequestStopWithoutWaiting();
     }
 
@@ -386,8 +470,24 @@ internal sealed class MediaFoundationPreviewSession
     private void OnSurfaceSizeChanged(object? sender, PreviewSurfaceSize size)
     {
         _ = sender;
+        Volatile.Write(ref surfacePresentable, request.Surface.IsPresentable && !size.IsEmpty ? 1 : 0);
         // This mailbox is capacity one; D3D resize work remains on the preview thread.
         Volatile.Read(ref activeRenderer)?.RequestResize(size);
+    }
+
+    private void OnSurfacePresentabilityChanged(object? sender, EventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        var presentable = request.Surface.IsPresentable && !request.Surface.PixelSize.IsEmpty;
+        Volatile.Write(ref surfacePresentable, presentable ? 1 : 0);
+        if (!presentable) return;
+
+        // Restoration receives a fresh grace interval; this is not recorded as a
+        // successful presentation, and a visible surface that still cannot present
+        // will be diagnosed by the watchdog after the normal threshold.
+        Volatile.Write(ref lastPresentedTimestamp, Stopwatch.GetTimestamp());
+        Volatile.Read(ref activeRenderer)?.RequestResize(request.Surface.PixelSize);
     }
 
     private async Task FlushReaderOnMtaControlThreadAsync()
@@ -402,7 +502,7 @@ internal sealed class MediaFoundationPreviewSession
                 initialized = result >= 0;
                 if (result < 0)
                 {
-                    logger.Warning("The preview stop control path could not initialize COM for Source Reader flush.");
+                    SafeLogWarning("The preview stop control path could not initialize COM for Source Reader flush.");
                     return;
                 }
 
@@ -411,7 +511,7 @@ internal sealed class MediaFoundationPreviewSession
                     if (!readerReleased && publishedReader is not null)
                     {
                         try { publishedReader.Flush(FirstVideoStream); }
-                        catch (COMException exception) { logger.Warning($"Source Reader flush failed safely with 0x{exception.HResult:X8}."); }
+                        catch (COMException exception) { SafeLogWarning($"Source Reader flush failed safely with 0x{exception.HResult:X8}."); }
                     }
                 }
             }
@@ -434,10 +534,47 @@ internal sealed class MediaFoundationPreviewSession
     {
         var task = StopAsync();
         _ = task.ContinueWith(
-            completed => logger.LogError("Preview cancellation stop failed unexpectedly.", completed.Exception),
+            completed => SafeLogError("Preview cancellation stop failed unexpectedly.", completed.Exception),
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private void LogFinalDiagnostics()
+    {
+        var finalDiagnostics = diagnostics.CreateSnapshot(DateTimeOffset.UtcNow);
+        logger.Information(
+            $"Preview diagnostics: device='{finalDiagnostics.DeviceDisplayName}'; native='{finalDiagnostics.ActualNativeFormat}'; " +
+            $"output={finalDiagnostics.NegotiatedOutputSubtype} {finalDiagnostics.ActualOutputWidth}x{finalDiagnostics.ActualOutputHeight} " +
+            $"{finalDiagnostics.ActualOutputFrameRateNumerator}/{finalDiagnostics.ActualOutputFrameRateDenominator} {finalDiagnostics.ActualOutputInterlaceMode}; " +
+            $"driver={finalDiagnostics.DriverType}; received={finalDiagnostics.FramesReceived}; rendered={finalDiagnostics.FramesRendered}; " +
+            $"received-fps={finalDiagnostics.FramesReceivedPerSecond:F1}; rendered-fps={finalDiagnostics.RenderedFramesPerSecond:F1}; " +
+            $"sample-timestamp-fps={finalDiagnostics.SampleTimestampFramesPerSecond:F1}; average-processing-ms={finalDiagnostics.AverageProcessingMilliseconds:F2}; " +
+            $"p95-processing-ms={finalDiagnostics.P95ProcessingMilliseconds:F2}; average-return-to-present-ms={finalDiagnostics.AverageSampleReturnToPresentMilliseconds:F2}; " +
+            $"p95-return-to-present-ms={finalDiagnostics.P95SampleReturnToPresentMilliseconds:F2}; surface-skips={finalDiagnostics.FramesSkippedForUnavailableSurface}; " +
+            $"present-still-drawing={finalDiagnostics.PresentWasStillDrawingCount}; null-samples={finalDiagnostics.NullSamples}; stream-ticks={finalDiagnostics.StreamTicks}; " +
+            $"presentation-failures={finalDiagnostics.PresentationFailures}; last-failure={finalDiagnostics.LastFailureCategory?.ToString() ?? "none"}.");
+    }
+
+    private void ReportCleanupFailure(string step, Exception exception)
+    {
+        try
+        {
+            logger.Warning($"Preview cleanup step '{step}' failed safely: {exception.GetType().Name}.");
+        }
+        catch (Exception) { }
+    }
+
+    private void SafeLogWarning(string message)
+    {
+        try { logger.Warning(message); }
+        catch (Exception) { }
+    }
+
+    private void SafeLogError(string message, Exception? exception)
+    {
+        try { logger.LogError(message, exception); }
+        catch (Exception) { }
     }
 
     private static unsafe int InitializeMta() => PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED).Value;
@@ -491,12 +628,35 @@ internal sealed class MediaFoundationPreviewSession
         catch (COMException) { return false; }
     }
 
-    private static void ShutdownMediaSource(IMFMediaSource? source)
+    private static NegotiatedOutputFormat ReadNegotiatedOutput(IMFMediaType mediaType)
     {
-        if (source is null) return;
-        try { source.Shutdown(); }
-        catch (COMException exception) when (exception.HResult == MediaFoundationHResults.Shutdown) { }
+        mediaType.GetGUID(PInvoke.MF_MT_SUBTYPE, out var subtype);
+        mediaType.GetUINT64(PInvoke.MF_MT_FRAME_SIZE, out var frameSize);
+        mediaType.GetUINT64(PInvoke.MF_MT_FRAME_RATE, out var frameRate);
+        var interlace = VideoInterlaceMode.Unknown;
+        try
+        {
+            mediaType.GetUINT32(PInvoke.MF_MT_INTERLACE_MODE, out var interlaceValue);
+            interlace = ToInterlaceMode(interlaceValue);
+        }
+        catch (COMException) { }
+
+        return new NegotiatedOutputFormat(
+            subtype == PInvoke.MFVideoFormat_NV12 ? "NV12" : subtype.ToString("D"),
+            (uint)(frameSize >> 32),
+            (uint)frameSize,
+            (uint)(frameRate >> 32),
+            (uint)frameRate,
+            interlace);
     }
+
+    private static VideoInterlaceMode ToInterlaceMode(uint value) => value switch
+    {
+        2 => VideoInterlaceMode.Progressive,
+        3 or 4 or 5 or 6 => VideoInterlaceMode.Interlaced,
+        7 => VideoInterlaceMode.Mixed,
+        _ => VideoInterlaceMode.Unknown
+    };
 
     private static void ReleaseComObject(object? value)
     {
@@ -505,4 +665,12 @@ internal sealed class MediaFoundationPreviewSession
 
     private static PreviewNativeException Failure(PreviewFailureCategory category, string message, int? hresult = null, Exception? exception = null) =>
         new(new PreviewFailure(category, message, hresult, exception));
+
+    private readonly record struct NegotiatedOutputFormat(
+        string Subtype,
+        uint Width,
+        uint Height,
+        uint FrameRateNumerator,
+        uint FrameRateDenominator,
+        VideoInterlaceMode InterlaceMode);
 }
