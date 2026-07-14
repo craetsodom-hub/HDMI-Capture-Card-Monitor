@@ -90,10 +90,19 @@ public sealed class MainWindowViewModelTests
         viewModel.ShowSettingsInformationCommand.Execute(null);
         Assert.Equal("Settings are not available yet.", viewModel.StatusMessage);
         Assert.DoesNotContain("Phase", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.True(viewModel.IsInformationDialogOpen);
+        Assert.Contains("Settings", viewModel.InformationDialogTitle, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Phase", viewModel.InformationDialogDescription, StringComparison.OrdinalIgnoreCase);
+
+        viewModel.CloseInformationDialogCommand.Execute(null);
+        Assert.False(viewModel.IsInformationDialogOpen);
 
         viewModel.ShowHelpInformationCommand.Execute(null);
-        Assert.Equal("Help content is not available yet.", viewModel.StatusMessage);
+        Assert.Equal("Help content is available in the open information panel.", viewModel.StatusMessage);
         Assert.DoesNotContain("Phase", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.True(viewModel.IsInformationDialogOpen);
+        Assert.Contains("camera access", viewModel.InformationDialogDetails, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("USB HDMI", viewModel.InformationDialogDetails, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void CountLifecycleNotification(

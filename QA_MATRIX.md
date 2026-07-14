@@ -40,3 +40,16 @@ Hardware rows are completed only when the named configuration was genuinely exer
 | Continuous preview | 7,609 received / 7,484 rendered; 125 intentional minimize skips; about 760.9 s; 10.0 received/rendered/sample-timestamp fps; 1.07/1.64 ms processing average/p95; 1.11/1.71 ms sample-return-to-present average/p95; zero presentation failures | Executed successfully |
 | Race/manual | Close during Starting in 798 ms; close during Previewing in 649 ms; Windows Camera acquisition after Stop and after application close | Executed successfully; process exited and camera released in both checks |
 | Physical USB HDMI | Real HDMI source, capture-card compatibility, disconnect/no-signal semantics, HDMI latency | Outstanding; mandatory before Microsoft Store release |
+
+## Phase 3 evidence
+
+| Category | Current evidence | Status |
+|---|---|---|
+| Automated presentation | Semantic light/dark resource keys, readable contrast thresholds, system-theme preference resolution, responsive breakpoint behavior, accessibility labels, information-panel content, access-key labels, and disabled future-feature semantics | Executed without hardware |
+| Primary workflow | Scan, HD Camera selection, 15-format discovery, 1280 × 720 NV12 Start/Stop/restart, state-aware messages, and live FPS status remain bound to existing Phase 1/2 services and state machine | Executed; stabilized UI diagnostics reported about 10 received/rendered fps |
+| Layout | Default, maximized, restored, 11-second minimized/restored, and 720-DIP narrow selector layout; long values use trimming plus full-value tooltips | Executed on the current Windows dark-theme environment |
+| Keyboard/accessibility | Access keys for Settings, Help, Device, Format, Refresh, Start/Stop, and dialog close; explicit Automation names and live status regions; visible focus border | Automated metadata checks plus manual keyboard review |
+| Theme | Separate semantic light/dark palettes selected from the Windows app preference at startup | Both palettes/contrast automated; active dark theme reviewed manually; light/high-contrast manual review outstanding |
+| Informational panels | Settings exposes no fake controls; Help explains the preview path, camera permission, busy-device recovery, and USB HDMI validation boundary | Automated content checks and manual active-preview access-key/focus/Escape review executed |
+| Device release | Windows Camera acquisition after Stop and after application close | Executed successfully with HD Camera |
+| Physical USB HDMI | HDMI compatibility, no-signal behavior, capture-card disconnect, and HDMI latency | Outstanding; mandatory before Microsoft Store release |

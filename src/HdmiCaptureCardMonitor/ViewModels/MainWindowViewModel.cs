@@ -39,6 +39,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool isDeviceScanRunning;
     [ObservableProperty] private bool isFormatScanRunning;
     [ObservableProperty] private bool isPreviewMessageVisible = true;
+    [ObservableProperty] private string previewGlyph = "\uE895";
+    [ObservableProperty] private bool isInformationDialogOpen;
+    [ObservableProperty] private string informationDialogEyebrow = string.Empty;
+    [ObservableProperty] private string informationDialogTitle = string.Empty;
+    [ObservableProperty] private string informationDialogDescription = string.Empty;
+    [ObservableProperty] private string informationDialogDetails = string.Empty;
     [ObservableProperty] private CaptureDevice? selectedDevice;
     [ObservableProperty] private NativeVideoCapability? selectedFormat;
     [ObservableProperty] private PreviewDiagnostics? currentPreviewDiagnostics;
@@ -67,6 +73,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         CaptureSessionState.Previewing => "Stop",
         CaptureSessionState.Stopping => "Stopping…",
         _ => "Start"
+    };
+    public string StartStopAccessText => SessionState switch
+    {
+        CaptureSessionState.Starting => "Starting…",
+        CaptureSessionState.Previewing => "_Stop",
+        CaptureSessionState.Stopping => "Stopping…",
+        _ => "_Start"
     };
     public bool CanFullscreen => laterFeaturesAvailable;
     public bool CanTakeSnapshot => laterFeaturesAvailable;
@@ -130,6 +143,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         RefreshDevicesCommand.NotifyCanExecuteChanged();
         TryTransition(CaptureSessionState.Enumerating);
         StatusMessage = "Scanning for video devices…";
+        PreviewGlyph = "\uE721";
         PreviewTitle = StatusMessage;
         PreviewDescription = "Please wait while Windows checks available video inputs.";
 
@@ -154,6 +168,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (Devices.Count == 0)
             {
                 StatusMessage = "No compatible video capture devices found.";
+                PreviewGlyph = "\uE711";
                 PreviewTitle = "No capture device detected";
                 PreviewDescription = "Connect a compatible USB HDMI capture card and select Refresh.";
             }
@@ -217,6 +232,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsFormatScanRunning = true;
         TryTransition(CaptureSessionState.Enumerating);
         StatusMessage = "Reading supported formats…";
+        PreviewGlyph = "\uE9D9";
         PreviewTitle = StatusMessage;
         PreviewDescription = "The selected device is being inspected.";
 
@@ -246,6 +262,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             }
 
             StatusMessage = $"Device ready · {Formats.Count} formats available";
+            PreviewGlyph = "\uE73E";
             PreviewTitle = "Capture device ready";
             PreviewDescription = "Select a native video format below.";
             TryTransition(CaptureSessionState.DeviceReady);
@@ -289,6 +306,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         previewSurface.SetSurfaceActive(true);
         TryTransition(CaptureSessionState.Starting);
         StatusMessage = "Starting live preview…";
+        PreviewGlyph = "\uE768";
         PreviewTitle = "Starting preview…";
         PreviewDescription = "Opening the selected video mode and preparing GPU rendering.";
 
@@ -316,6 +334,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             IsPreviewMessageVisible = true;
             TryTransition(CaptureSessionState.DeviceReady);
             StatusMessage = "Preview start was cancelled.";
+            PreviewGlyph = "\uE71A";
             PreviewTitle = "Preview stopped";
             PreviewDescription = "Select Start to open the selected video input.";
             return;
@@ -359,6 +378,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         cancellation?.Dispose();
         if (SessionState != CaptureSessionState.Stopping) TryTransition(CaptureSessionState.Stopping);
         StatusMessage = "Stopping live preview…";
+        PreviewGlyph = "\uE71A";
         PreviewTitle = "Stopping preview…";
         PreviewDescription = "Releasing the video device and graphics resources safely.";
 
@@ -384,12 +404,35 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         TryTransition(SelectedDevice is not null && SelectedFormat is not null ? CaptureSessionState.DeviceReady : CaptureSessionState.Idle);
         StatusMessage = "Preview stopped.";
+        PreviewGlyph = "\uE71A";
         PreviewTitle = "Preview stopped";
         PreviewDescription = "Select Start to resume the selected video input.";
     }
 
-    [RelayCommand] private void ShowSettingsInformation() => StatusMessage = "Settings are not available yet.";
-    [RelayCommand] private void ShowHelpInformation() => StatusMessage = "Help content is not available yet.";
+    [RelayCommand]
+    private void ShowSettingsInformation()
+    {
+        StatusMessage = "Settings are not available yet.";
+        InformationDialogEyebrow = "SETTINGS";
+        InformationDialogTitle = "Settings are coming later";
+        InformationDialogDescription = "This release keeps capture behavior explicit and predictable, so there are no placeholder switches or controls that pretend to change the application.";
+        InformationDialogDetails = "Device and native-format selection are available in the main monitor. Additional local preferences will be introduced only when they are fully implemented and tested.";
+        IsInformationDialogOpen = true;
+    }
+
+    [RelayCommand]
+    private void ShowHelpInformation()
+    {
+        StatusMessage = "Help content is available in the open information panel.";
+        InformationDialogEyebrow = "HELP";
+        InformationDialogTitle = "Start a live monitor preview";
+        InformationDialogDescription = "Connect a compatible video capture device, select Refresh, choose the device and one of its native formats, then select Start. Select Stop before unplugging the device when possible.";
+        InformationDialogDetails = "If access is denied, enable camera access for desktop apps in Windows Privacy & security. Close other camera applications if the device is busy. Generic UVC preview has been validated; physical USB HDMI capture-card compatibility remains a required release test.";
+        IsInformationDialogOpen = true;
+    }
+
+    [RelayCommand]
+    private void CloseInformationDialog() => IsInformationDialogOpen = false;
 
     public void Dispose()
     {
@@ -554,6 +597,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CanStartCapture));
         OnPropertyChanged(nameof(CanStartStopPreview));
         OnPropertyChanged(nameof(StartStopText));
+        OnPropertyChanged(nameof(StartStopAccessText));
         RefreshDevicesCommand.NotifyCanExecuteChanged();
         TogglePreviewCommand.NotifyCanExecuteChanged();
     }
@@ -561,6 +605,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void ApplySelectDeviceState()
     {
         StatusMessage = "Select a video capture device.";
+        PreviewGlyph = "\uE895";
         PreviewTitle = "Select a capture device";
         PreviewDescription = "Choose a Windows video input below to inspect its supported formats.";
     }
@@ -569,6 +614,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (SessionState == CaptureSessionState.Enumerating) TryTransition(CaptureSessionState.Idle);
         StatusMessage = "No compatible video capture devices found.";
+        PreviewGlyph = "\uE711";
         PreviewTitle = "No capture device detected";
         PreviewDescription = "Connect a compatible USB HDMI capture card and select Refresh.";
     }
@@ -577,6 +623,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (SessionState == CaptureSessionState.Enumerating) TryTransition(CaptureSessionState.Idle);
         StatusMessage = "Format discovery was cancelled.";
+        PreviewGlyph = "\uE71A";
         PreviewTitle = "Format discovery cancelled";
         PreviewDescription = "Select another capture device or select Refresh to try again.";
     }
@@ -584,6 +631,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void ApplyDiscoveryFailureMessage(DiscoveryFailure failure)
     {
         logger.Warning($"Video discovery failed during {failure.Operation} ({failure.HResultDisplay}).");
+        PreviewGlyph = "\uE783";
         switch (failure.Category)
         {
             case DiscoveryFailureCategory.MissingMediaComponents:
@@ -612,6 +660,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void ApplyPreviewFailureMessage(PreviewFailure failure)
     {
         logger.Warning($"Preview failed safely: {failure.Category}.");
+        PreviewGlyph = "\uE783";
         StatusMessage = failure.Category switch
         {
             PreviewFailureCategory.AccessDenied => "Windows camera access must be enabled before preview can start.",
