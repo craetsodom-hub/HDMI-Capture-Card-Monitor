@@ -1,7 +1,9 @@
 using System.Windows;
 using System.Runtime.CompilerServices;
+using System.Runtime.Versioning;
 
 [assembly: InternalsVisibleTo("HdmiCaptureCardMonitor.Tests")]
+[assembly: SupportedOSPlatform("windows10.0")]
 
 [assembly:ThemeInfo(
     ResourceDictionaryLocation.None,            //where theme specific resource dictionaries are located

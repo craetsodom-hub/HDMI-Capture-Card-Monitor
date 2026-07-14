@@ -40,3 +40,42 @@ MF_E_DISABLED_IN_SAFEMODE
 MF_E_SHUTDOWN
 E_NOTIMPL
 E_ACCESSDENIED
+
+// Phase 2A: child HWND preview surface.
+CreateWindowEx
+DestroyWindow
+ShowWindow
+SetWindowPos
+
+// Phase 2A: synchronous Source Reader and D3D manager.
+MFCreateDXGIDeviceManager
+IMFDXGIDeviceManager
+IMFDXGIBuffer
+IMFSourceReaderEx
+IMFMediaBuffer
+IMFSample
+MFCreateMediaType
+MF_LOW_LATENCY
+MF_SOURCE_READER_D3D_MANAGER
+MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS
+MF_SOURCE_READER_DISCONNECT_MEDIASOURCE_ON_SHUTDOWN
+MF_SOURCE_READER_FLAG
+
+// Phase 2A: D3D11 video processing and HWND swap chain.
+D3D11CreateDevice
+D3D11_SDK_VERSION
+ID3D11Device
+ID3D11DeviceContext
+ID3D11Texture2D
+ID3D11VideoDevice
+ID3D11VideoContext
+ID3D11VideoProcessorEnumerator
+ID3D11VideoProcessor
+ID3D11VideoProcessorInputView
+ID3D11VideoProcessorOutputView
+IDXGIDevice
+IDXGIAdapter
+IDXGIFactory2
+IDXGISwapChain1
+IDXGISwapChain2
+DXGI_PRESENT

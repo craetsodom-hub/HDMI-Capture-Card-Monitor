@@ -4,8 +4,9 @@
 |---|---|---|---|
 | 0. Foundation | Solution, docs, shell, state, logging | Release build/tests pass; empty state launches honestly | Architecture and scope reviewed |
 | 0.1 Foundation hardening | .NET 10 LTS, CI, state and logging hardening | Warnings-as-errors build/tests pass; PR review complete | CI and scoped hardening reviewed |
-| 1. Enumeration | Device/capability discovery | Lists real devices and native formats with cancellation/errors | Manual tests on at least two capture cards |
-| 2. Preview POC | Primary backend low-latency preview | Real video renders with bounded buffering and measured latency | Disconnect and format tests pass |
+| 1. Enumeration | Device/capability discovery | Lists real devices and native formats with cancellation/errors | Generic UVC discovery validated; USB HDMI validation remains required |
+| 2A. Preview POC | Primary backend GPU preview | Exact native mode renders through a no-queue GPU path with bounded shutdown and honest processing diagnostics | HD Camera NV12/MJPEG evidence recorded; USB HDMI, disconnect, and broader format validation remain required |
+| 2B. Preview hardening | Hardware breadth and recovery planning | Capture-card compatibility, disconnect behavior, and measured performance are characterized without absorbing later features | Required physical USB HDMI matrix passes before release claims |
 | 3. Premium UI | Production interaction shell | Accessible device/format/status workflow | Keyboard, DPI, contrast review passes |
 | 4. Audio | Local audio monitoring | Stable selected-device audio and explicit permission failures | A/V behavior documented and tested |
 | 5. Media tools | Snapshots and recording | User-requested output is local, cancellable, and validated | Disk-space/error recovery tests pass |
