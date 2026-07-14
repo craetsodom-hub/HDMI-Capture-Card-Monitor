@@ -38,7 +38,21 @@ public sealed class MediaFoundationRuntime : IDisposable
             if (disposed) return DisposedResult;
             if (cachedResult is not null) return cachedResult;
 
-            var hresult = startup();
+            int hresult;
+            try
+            {
+                hresult = startup();
+            }
+            catch (DllNotFoundException)
+            {
+                cachedResult = new MediaFoundationStartupResult(MediaFoundationStartupStatus.MissingMediaComponents, null);
+                return cachedResult;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                cachedResult = new MediaFoundationStartupResult(MediaFoundationStartupStatus.MissingMediaComponents, null);
+                return cachedResult;
+            }
             started = hresult >= 0;
             cachedResult = started
                 ? new MediaFoundationStartupResult(MediaFoundationStartupStatus.Success, hresult)

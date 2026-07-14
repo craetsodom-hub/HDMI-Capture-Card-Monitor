@@ -97,6 +97,16 @@ public sealed class PhaseOneManagedBehaviorTests
         Assert.False(MediaFoundationDeviceDiscoveryService.IsAlreadyShutdownResult(unchecked((int)0x80004005)));
     }
 
+    [Theory]
+    [InlineData(DiscoveryOperation.SelectedDeviceActivation)]
+    [InlineData(DiscoveryOperation.NativeMediaTypeDiscovery)]
+    [InlineData(DiscoveryOperation.CleanupShutdown)]
+    public void CapabilityFailureHelperPreservesOperation(DiscoveryOperation operation)
+    {
+        var result = MediaFoundationDeviceDiscoveryService.FailedCapabilities(operation, DiscoveryFailureCategory.Unknown, unchecked((int)0x80004005), "safe");
+        Assert.Equal(operation, result.Failure!.Operation);
+    }
+
     private static NativeVideoCapability CreateCapability(uint numerator, uint denominator, string subtype, int index, Guid subtypeGuid) =>
         new(0, index, 1920, 1080, numerator, denominator, NativeVideoCapabilityFormatter.CalculateFrameRate(numerator, denominator), subtypeGuid, subtype, VideoInterlaceMode.Progressive, 1, 1, "test");
 }

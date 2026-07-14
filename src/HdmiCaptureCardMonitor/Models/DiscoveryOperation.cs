@@ -7,5 +7,6 @@ public enum DiscoveryOperation
     SelectedDeviceActivation,
     NativeMediaTypeDiscovery,
     Cleanup,
+    CleanupShutdown,
     Shutdown
 }

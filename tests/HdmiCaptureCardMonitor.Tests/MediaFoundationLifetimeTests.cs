@@ -35,6 +35,14 @@ public sealed class MediaFoundationLifetimeTests
     }
 
     [Fact]
+    public void DllNotFoundStartupFailureIsCachedWithoutFabricatedHResult() =>
+        AssertStartupExceptionIsCached(new DllNotFoundException());
+
+    [Fact]
+    public void EntryPointNotFoundStartupFailureIsCachedWithoutFabricatedHResult() =>
+        AssertStartupExceptionIsCached(new EntryPointNotFoundException());
+
+    [Fact]
     public void InitializeAfterDisposalReturnsDeterministicFailure()
     {
         var calls = 0;
@@ -143,6 +151,20 @@ public sealed class MediaFoundationLifetimeTests
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static void AssertStartupExceptionIsCached(Exception exception)
+    {
+        var calls = 0;
+        using var runtime = new MediaFoundationRuntime(() => { calls++; throw exception; }, () => 0, NullApplicationLogger.Instance);
+
+        var first = runtime.Initialize();
+        var second = runtime.Initialize();
+
+        Assert.Same(first, second);
+        Assert.Equal(MediaFoundationStartupStatus.MissingMediaComponents, first.Status);
+        Assert.Null(first.HResult);
+        Assert.Equal(1, calls);
+    }
 
     private sealed class RecordingLogger : IApplicationLogger
     {

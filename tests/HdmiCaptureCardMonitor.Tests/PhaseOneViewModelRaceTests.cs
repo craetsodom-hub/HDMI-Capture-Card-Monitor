@@ -212,7 +212,84 @@ public sealed class PhaseOneViewModelRaceTests
         var refresh = viewModel.RefreshDevicesForTestingAsync();
         fake.DeviceRequests[0].Complete(DiscoveryResults.Cancelled<IReadOnlyList<CaptureDevice>>());
         await refresh;
-        Assert.NotEqual(CaptureSessionState.Faulted, viewModel.SessionState);
+        Assert.Equal(CaptureSessionState.Idle, viewModel.SessionState);
+        Assert.False(viewModel.IsDeviceScanRunning);
+        Assert.Equal("No capture device detected", viewModel.PreviewTitle);
+    }
+
+    [Fact]
+    public async Task SuccessfulEmptyCapabilityResultIsTreatedAsNoUsableFormats()
+    {
+        var (viewModel, fake, _) = Create();
+        await PopulateDeviceAsync(viewModel, fake, Camera);
+        viewModel.SelectedDevice = Camera;
+        var formats = viewModel.FormatDiscoveryCompletion;
+        fake.FormatRequests[0].Complete(DiscoveryResults.Success<IReadOnlyList<NativeVideoCapability>>([]));
+        await formats;
+
+        Assert.Equal(Camera, viewModel.SelectedDevice);
+        Assert.Empty(viewModel.Formats);
+        Assert.False(viewModel.HasFormats);
+        Assert.Equal(CaptureSessionState.Faulted, viewModel.SessionState);
+        Assert.Equal("No native formats available", viewModel.PreviewTitle);
+        Assert.Equal("Select another capture device or refresh the device list.", viewModel.PreviewDescription);
+        Assert.Equal("The selected device exposed no usable native video formats.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task ClearingSelectionWhileFormatDiscoveryIsBlockedCancelsAndResetsText()
+    {
+        var (viewModel, fake, _) = Create();
+        await PopulateDeviceAsync(viewModel, fake, Camera);
+        viewModel.SelectedDevice = Camera;
+        var blocked = viewModel.FormatDiscoveryCompletion;
+        Assert.Equal("Reading supported formats…", viewModel.FormatPlaceholder);
+
+        viewModel.SelectedDevice = null;
+        await viewModel.FormatDiscoveryCompletion;
+
+        Assert.True(fake.FormatRequests[0].IsCancellationRequested);
+        Assert.Equal(CaptureSessionState.Idle, viewModel.SessionState);
+        Assert.Empty(viewModel.Formats);
+        Assert.Equal("Select a video capture device.", viewModel.StatusMessage);
+        Assert.Equal("Select a capture device", viewModel.PreviewTitle);
+        Assert.Equal("Choose a Windows video input below to inspect its supported formats.", viewModel.PreviewDescription);
+        Assert.Equal("Select a device first", viewModel.FormatPlaceholder);
+
+        fake.FormatRequests[0].Complete(DiscoveryResults.Success<IReadOnlyList<NativeVideoCapability>>([Format]));
+        await blocked;
+        Assert.Empty(viewModel.Formats);
+        Assert.Equal("Select a capture device", viewModel.PreviewTitle);
+    }
+
+    [Fact]
+    public async Task CurrentFormatCancellationReturnsToIdleWithoutFaulting()
+    {
+        var (viewModel, fake, _) = Create();
+        await PopulateDeviceAsync(viewModel, fake, Camera);
+        viewModel.SelectedDevice = Camera;
+        var formats = viewModel.FormatDiscoveryCompletion;
+        fake.FormatRequests[0].Complete(DiscoveryResults.Cancelled<IReadOnlyList<NativeVideoCapability>>());
+        await formats;
+
+        Assert.Equal(CaptureSessionState.Idle, viewModel.SessionState);
+        Assert.False(viewModel.IsFormatScanRunning);
+        Assert.Empty(viewModel.Formats);
+        Assert.Equal("Format discovery cancelled", viewModel.PreviewTitle);
+    }
+
+    [Fact]
+    public async Task AccessDeniedUsesCameraPrivacyGuidanceWithoutDiagnostics()
+    {
+        var (viewModel, fake, _) = Create();
+        var refresh = viewModel.RefreshDevicesForTestingAsync();
+        fake.DeviceRequests[0].Complete(FailedDevices(DiscoveryFailureCategory.AccessDenied));
+        await refresh;
+
+        var text = string.Join(' ', viewModel.StatusMessage, viewModel.PreviewTitle, viewModel.PreviewDescription);
+        Assert.Contains("camera access", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("0x", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(Camera.Id, text, StringComparison.Ordinal);
     }
 
     [Fact]

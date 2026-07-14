@@ -132,7 +132,7 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
         var apartmentResult = PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED);
         if (apartmentResult.Failed)
         {
-            return FailedCapabilities(DiscoveryFailureCategory.ComApartmentFailure, apartmentResult.Value, "The discovery worker could not initialize COM.");
+            return FailedCapabilities(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.ComApartmentFailure, apartmentResult.Value, "The discovery worker could not initialize COM.");
         }
 
         try
@@ -140,7 +140,7 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
             var createAttributesResult = PInvoke.MFCreateAttributes(out IMFAttributes? attributes, 1);
             if (createAttributesResult.Failed || attributes is null)
             {
-                return FailedCapabilities(DiscoveryFailureCategory.Unknown, createAttributesResult.Value, "Could not create device activation attributes.");
+                return FailedCapabilities(DiscoveryOperation.SelectedDeviceActivation, DiscoveryFailureCategory.Unknown, createAttributesResult.Value, "Could not create device activation attributes.");
             }
 
             IMFMediaSource? mediaSource = null;
@@ -154,19 +154,19 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
                 }
                 catch (COMException exception)
                 {
-                    return FailedCapabilities(MapFailure(exception.HResult), exception.HResult, "Could not configure selected-device activation attributes.", exception);
+                    return FailedCapabilities(DiscoveryOperation.SelectedDeviceActivation, MapFailure(exception.HResult), exception.HResult, "Could not configure selected-device activation attributes.", exception);
                 }
 
                 var createSourceResult = PInvoke.MFCreateDeviceSource(attributes, out mediaSource);
                 if (createSourceResult.Failed || mediaSource is null)
                 {
-                    return FailedCapabilities(MapFailure(createSourceResult.Value), createSourceResult.Value, "The selected video device could not be opened.");
+                    return FailedCapabilities(DiscoveryOperation.SelectedDeviceActivation, MapFailure(createSourceResult.Value), createSourceResult.Value, "The selected video device could not be opened.");
                 }
 
                 var createReaderResult = PInvoke.MFCreateSourceReaderFromMediaSource(mediaSource, null, out sourceReader);
                 if (createReaderResult.Failed || sourceReader is null)
                 {
-                    return FailedCapabilities(MapFailure(createReaderResult.Value), createReaderResult.Value, "Could not inspect the selected device formats.");
+                    return FailedCapabilities(DiscoveryOperation.NativeMediaTypeDiscovery, MapFailure(createReaderResult.Value), createReaderResult.Value, "Could not inspect the selected device formats.");
                 }
 
                 var capabilities = new List<NativeVideoCapability>();
@@ -189,12 +189,12 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
                         }
                         catch (COMException exception)
                         {
-                            return FailedCapabilities(MapFailure(exception.HResult), exception.HResult, "Native media-type enumeration failed.", exception);
+                            return FailedCapabilities(DiscoveryOperation.NativeMediaTypeDiscovery, MapFailure(exception.HResult), exception.HResult, "Native media-type enumeration failed.", exception);
                         }
 
                         if (mediaType is null)
                         {
-                            return FailedCapabilities(DiscoveryFailureCategory.InvalidNativeData, null, "Native media-type enumeration returned no media type.");
+                            return FailedCapabilities(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.InvalidNativeData, null, "Native media-type enumeration returned no media type.");
                         }
 
                         if (TryCreateCapability(mediaType, mediaTypeIndex, out var capability)) capabilities.Add(capability!);
@@ -205,7 +205,7 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
 
                 var normalized = NativeVideoCapabilityFormatter.SortAndDeduplicate(capabilities);
                 return normalized.Count == 0
-                    ? FailedCapabilities(DiscoveryFailureCategory.NoUsableFormats, null, "The device exposed no usable native video capabilities.")
+                    ? FailedCapabilities(DiscoveryOperation.NativeMediaTypeDiscovery, DiscoveryFailureCategory.NoUsableFormats, null, "The device exposed no usable native video capabilities.")
                     : DiscoveryResults.Success(normalized);
             }
             finally
@@ -319,7 +319,7 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
         if (mediaSource is null) return;
         try { mediaSource.Shutdown(); }
         catch (COMException exception) when (IsAlreadyShutdownResult(exception.HResult)) { }
-        catch (COMException exception) { logger.Warning($"Media source shutdown reported 0x{exception.HResult:X8}; continuing deterministic native cleanup."); }
+        catch (COMException exception) { logger.Warning($"{DiscoveryOperation.CleanupShutdown} reported 0x{exception.HResult:X8}; continuing deterministic native cleanup."); }
         finally { ReleaseComObject(mediaSource); }
     }
 
@@ -348,6 +348,6 @@ internal sealed class MediaFoundationDeviceDiscoveryService : ICaptureDeviceDisc
     private static DiscoveryResult<IReadOnlyList<CaptureDevice>> FailedDevices(DiscoveryFailureCategory category, int? hresult, string message, Exception? exception = null) =>
         DiscoveryResults.Failed<IReadOnlyList<CaptureDevice>>(new DiscoveryFailure(DiscoveryOperation.DeviceEnumeration, category, hresult, message, exception));
 
-    private static DiscoveryResult<IReadOnlyList<NativeVideoCapability>> FailedCapabilities(DiscoveryFailureCategory category, int? hresult, string message, Exception? exception = null) =>
-        DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(DiscoveryOperation.NativeMediaTypeDiscovery, category, hresult, message, exception));
+    internal static DiscoveryResult<IReadOnlyList<NativeVideoCapability>> FailedCapabilities(DiscoveryOperation operation, DiscoveryFailureCategory category, int? hresult, string message, Exception? exception = null) =>
+        DiscoveryResults.Failed<IReadOnlyList<NativeVideoCapability>>(new DiscoveryFailure(operation, category, hresult, message, exception));
 }
