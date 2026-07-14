@@ -32,8 +32,8 @@
         <Border Grid.Row="1" Style="{StaticResource PreviewSurface}" Margin="0,0,0,20">
             <Grid>
                 <StackPanel MaxWidth="520" Margin="32" HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                    <TextBlock Text="No capture device selected" Style="{StaticResource PreviewMessage}" TextAlignment="Center" />
-                    <TextBlock Text="Connect a compatible USB HDMI capture card to begin."
+                    <TextBlock Text="{Binding PreviewTitle}" Style="{StaticResource PreviewMessage}" TextAlignment="Center" />
+                    <TextBlock Text="{Binding PreviewDescription}"
                                Style="{StaticResource PreviewDescription}" TextAlignment="Center" TextWrapping="Wrap" />
                 </StackPanel>
             </Grid>
@@ -50,23 +50,48 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock Text="DEVICE" Style="{StaticResource FieldLabel}" />
-                    <ComboBox IsEnabled="False" SelectedIndex="0" Style="{StaticResource SelectorControl}">
-                        <ComboBoxItem Content="No device available" />
-                    </ComboBox>
+                    <DockPanel LastChildFill="True">
+                        <Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshDevicesCommand}" IsEnabled="{Binding CanRefreshDevices}" Style="{StaticResource SecondaryButton}" AutomationProperties.Name="Refresh video devices" />
+                        <TextBlock Text="DEVICE" Style="{StaticResource FieldLabel}" />
+                    </DockPanel>
+                    <Grid>
+                        <ComboBox x:Name="DeviceSelector" ItemsSource="{Binding Devices}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedDevice}" IsEnabled="{Binding HasDevices}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Video capture device" />
+                        <TextBlock Text="{Binding DevicePlaceholder}" IsHitTestVisible="False" Margin="12,0,36,0" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SelectedItem, ElementName=DeviceSelector}" Value="{x:Null}"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                        <DataTrigger Binding="{Binding IsEnabled, ElementName=DeviceSelector}" Value="False"><Setter Property="Opacity" Value="0.56" /></DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Margin="14,0,0,0">
                     <TextBlock Text="FORMAT" Style="{StaticResource FieldLabel}" />
-                    <ComboBox IsEnabled="False" SelectedIndex="0" Style="{StaticResource SelectorControl}">
-                        <ComboBoxItem Content="Select a device first" />
-                    </ComboBox>
+                    <Grid>
+                        <ComboBox x:Name="FormatSelector" ItemsSource="{Binding Formats}" DisplayMemberPath="DisplayLabel" SelectedItem="{Binding SelectedFormat}" IsEnabled="{Binding HasFormats}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Native video format" />
+                        <TextBlock Text="{Binding FormatPlaceholder}" IsHitTestVisible="False" Margin="12,0,36,0" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SelectedItem, ElementName=FormatSelector}" Value="{x:Null}"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                        <DataTrigger Binding="{Binding IsEnabled, ElementName=FormatSelector}" Value="False"><Setter Property="Opacity" Value="0.56" /></DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
                 </StackPanel>
             </Grid>
             <WrapPanel Grid.Row="1" Margin="0,14,0,0" HorizontalAlignment="Right">
-                <Button Content="Start" IsEnabled="False" Style="{StaticResource PrimaryButton}" />
-                <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource SecondaryButton}" />
-                <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource SecondaryButton}" />
-                <Button Content="Record" IsEnabled="False" Style="{StaticResource RecordButton}" />
+                <Button Content="Start" IsEnabled="{Binding CanStartCapture}" Style="{StaticResource PrimaryButton}" />
+                <Button Content="Fullscreen" IsEnabled="{Binding CanFullscreen}" Style="{StaticResource SecondaryButton}" />
+                <Button Content="Snapshot" IsEnabled="{Binding CanTakeSnapshot}" Style="{StaticResource SecondaryButton}" />
+                <Button Content="Record" IsEnabled="{Binding CanRecord}" Style="{StaticResource RecordButton}" />
             </WrapPanel>
         </Grid>
 
