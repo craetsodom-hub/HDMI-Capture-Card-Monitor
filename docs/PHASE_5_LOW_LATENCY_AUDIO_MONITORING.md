@@ -14,23 +14,25 @@ The UI does not invent endpoints. `No audio` means no audio session will be crea
 
 ## WASAPI shared-mode session
 
-`WasapiAudioMonitorService` serializes start, stop, and disposal and owns at most one `WasapiAudioMonitorSession`. The session creates one named background MTA thread; that thread owns every capture/render COM object and event handle for its lifetime. It activates the requested input and render devices, creates `IAudioClient3` clients where available, and prefers shared-mode engine-period initialization. If the AudioClient3 period path is unavailable or rejected, it falls back explicitly to classic event-driven `IAudioClient.Initialize` in shared mode. The selected initialization path is diagnostic data; there is no silent fallback to an unrelated endpoint.
+`WasapiAudioMonitorService` serializes start, stop, and disposal and owns at most one `WasapiAudioMonitorSession`. The session creates one named background MTA thread; that thread owns every capture/render COM object and event handle for its lifetime. The preferred path uses `IAudioClient3.InitializeSharedAudioStream` for capture and classic shared `IAudioClient.Initialize` with `RATEADJUST` for render. The actual render engine period is queried rather than inferred. This hybrid is deliberate because `InitializeSharedAudioStream` supports `EVENTCALLBACK` but not `RATEADJUST`. If that path is unavailable or rejected, a classic shared pair is the explicit fallback. The selected initialization path is diagnostic data; there is no silent fallback to an unrelated endpoint.
 
 The render endpoint's shared mix format defines a common application format. Windows Audio Engine conversion supplies the capture stream in matching 32-bit IEEE-float sample rate, channel count, and channel mask. The application contains no custom resampler, codec, channel mixer, or third-party native audio runtime.
 
 ## Event loop, scheduling, and buffering
 
-The worker waits on stop, capture, and render events. It drains complete capture packets through `IAudioCaptureClient`, preserves silent/discontinuity/timestamp flags as counters, and releases every native packet before continuing. Render events request exactly one period through `IAudioRenderClient`. The worker registers with MMCSS under the `Audio` task and requests high relative priority; failure to register is observable in diagnostics rather than fatal.
+The worker waits on stop, capture, and render events. It drains complete capture packets through `IAudioCaptureClient`, preserves silent/discontinuity/timestamp flags as counters, and releases every native packet before continuing. Render events request exactly one period through `IAudioRenderClient` and then drain any capture packet already available. Capture-only wakes do not render early. This ordering preserves room for full-buffer capture bursts without allowing a continuously signaled render event to starve capture. The worker registers with MMCSS under the `Audio` task and requests high relative priority; failure to register is observable in diagnostics rather than fatal.
 
 Samples cross a preallocated, interleaved-float ring buffer that accepts and returns complete audio frames only. The current observed 48 kHz stereo policy is:
 
 - Capture period: 480 frames / 10 ms.
 - Render period: 480 frames / 10 ms.
-- Startup and operational target: 1,440 frames / 30 ms (three periods).
+- Startup and operational target: 960 frames / 20 ms (two periods).
 - Hard capacity: 2,880 frames / 60 ms (six periods).
 - Render request: one period per render event.
 
 If insufficient frames are available, the unwritten render region is silent and an underrun is counted; the thread never blocks waiting for capture. If capacity would be exceeded, the oldest complete frames are discarded and overrun/drop counters are advanced. No queue-growth policy may exceed six periods. Queue milliseconds describe application buffer occupancy only; they are not camera-to-speaker, HDMI, or end-to-end latency.
+
+Independent capture and render clocks are reconciled by a small queue controller on a separate below-normal-priority MTA thread. It owns `IAudioClockAdjustment`, samples queue depth every 500 ms, and applies a proportional correction centered on the two-period target, clamped to ±3,000 ppm. `SetSampleRate` never runs on the MMCSS packet thread. The applied correction is recorded in diagnostics, and the controller is joined before its render client can be released.
 
 ## Volume and mute
 
@@ -46,28 +48,29 @@ Fullscreen is presentation-only. Entering or leaving fullscreen does not restart
 
 Customer-facing failures distinguish access denied, missing capture/output endpoints, device in use, unsupported format, stopped audio service, endpoint creation, device/resources invalidation, buffer failure, startup timeout, stop timeout, processing failure, and an otherwise safe generic failure. Messages and logs avoid opaque IDs and media content.
 
-Diagnostics are emitted at most twice per second and include safe endpoint names, advertised capture format, render mix format, common format, AudioClient3/classic path, capture/render periods and native buffer sizes, current/maximum/capacity/target queue frames, captured/rendered/silent frames, discontinuities, timestamp errors, underruns, overruns, dropped frames, device/QPC positions, MMCSS state, volume/mute, last packet/render times, and the latest failure category.
+Diagnostics are emitted at most twice per second and include safe endpoint names, advertised capture format, render mix format, common format, initialization path, capture/render periods and native buffer sizes, current/maximum/capacity/target queue frames, captured/rendered/silent frames, discontinuities, timestamp errors, underruns, overruns, dropped frames, applied rate correction, device/QPC positions, MMCSS state, volume/mute, last packet/render times, and the latest failure category.
 
 Stop is idempotent, signals the worker, and waits at most three seconds. Native objects remain owned by the worker until it exits. Cleanup attempts reverse-order release of render/capture services, clients, devices, event handles, MMCSS registration, COM initialization, and the ring buffer even if an earlier release fails. Application shutdown disposes the audio monitor and endpoint discovery before the Media Foundation video services.
 
 ## Executed validation and honest result
 
-This machine exposed `Réseau de microphones (Realtek(R) Audio)` and `Haut-parleurs (Realtek(R) Audio)`. Endpoint discovery used their safe names; no opaque identifier was displayed. The physical path was tested muted at zero gain to prevent acoustic feedback. `IAudioClient3` initialized shared 32-bit float audio at 48 kHz stereo with 480-frame capture/render periods and 1,056-frame native buffers.
+This machine exposed `Réseau de microphones (Realtek(R) Audio)` and `Haut-parleurs (Realtek(R) Audio)`. Endpoint discovery used their safe names; no opaque identifier was displayed. The physical path was tested muted at zero gain to prevent acoustic feedback. The hybrid path initialized shared 32-bit float audio at 48 kHz stereo with 480-frame capture/render periods and 1,056/2,238-frame native buffers.
 
-A genuine ten-minute muted run completed cleanup and recorded:
+A historical ten-minute baseline recorded 208 underruns, 1 overrun, and 96 dropped frames. That failure justified investigating independent-clock drift and event scheduling; it is retained as correction evidence, not presented as a passing result. The corrected build then completed a genuine ten-minute muted run and cleanup with:
 
-- 28,692,672 captured frames and 28,791,552 rendered frames.
-- 100,512 silent frames.
-- 208 underruns, 1 overrun, and 96 dropped frames.
-- 5 discontinuities and 0 timestamp errors.
-- Maximum observed application queue: 1,920 frames (40 ms).
+- 28,789,536 captured frames and 28,788,960 rendered frames.
+- 480 startup-silent frames.
+- 0 underruns, 0 overruns, and 0 dropped frames.
+- 3 device discontinuity flags and 0 timestamp errors.
+- Final queue 576 frames; maximum observed queue 1,536 frames (32 ms).
+- Final applied correction +400 ppm; observed bounded samples ranged from −1,600 to +400 ppm during the passing run.
 
-Corrective bounded policies were then compared without adding a custom resampler, hiding clock adjustment, or exceeding the six-period limit. The final one-minute observation recorded 2,861,472 captured frames, 2,866,560 rendered frames, 6,624 silent frames, 13 underruns, 0 overruns, 0 dropped frames, 5 discontinuities, 0 timestamp errors, and a maximum queue of 2,496 frames (52 ms). Twenty additional muted Start/Stop cycles completed, and both endpoints were released after every cycle.
+Twenty additional muted Start/Stop cycles completed, and immediate endpoint re-enumeration confirmed that both endpoints were released. The ordinary test suite contains deterministic checks for the bounded proportional calculation; hardware validation asserts that all three loss counters remain zero.
 
-Recurring underruns therefore remain a Phase 5 blocker. The implementation and draft PR do not claim stable, crackle-free, drift-free, or low-latency audible monitoring. No wired headphones were present, so an unmuted microphone test was intentionally omitted; using laptop speakers would create a feedback risk. Audible quality, fullscreen audible continuity, long-duration clock drift, and A/V synchronization are unvalidated.
+The recurring muted-path underrun blocker is resolved on this laptop configuration. No wired headphones were present, so an unmuted microphone test was intentionally omitted; using laptop speakers would create a feedback risk. The passing muted run does not establish audible quality, crackle-free output, fullscreen audible continuity, A/V synchronization, or HDMI compatibility.
 
 ## Mandatory remaining validation and deferred features
 
 Before Microsoft Store release, testing must include a physical USB HDMI capture card and source, its actual audio endpoint/topology, explicit endpoint association behavior, supported audio formats, no-signal and disconnect behavior, safe headphone monitoring, long-duration queue/drift behavior, A/V synchronization, and measured HDMI audio/video latency. A webcam and laptop microphone do not establish HDMI compatibility.
 
-Audio recording, media muxing, snapshots, reconnect, diagnostics export, system-volume control, custom resampling, and automatic audio/video endpoint association remain intentionally deferred. The Phase 5 pull request stays draft and unmerged while the recurring-underrun blocker and physical-hardware gaps remain open.
+Audio recording, media muxing, snapshots, reconnect, diagnostics export, system-volume control, custom resampling, and automatic audio/video endpoint association remain intentionally deferred. The Phase 5 pull request stays draft and unmerged while audible headphone and physical USB HDMI hardware gaps remain open.

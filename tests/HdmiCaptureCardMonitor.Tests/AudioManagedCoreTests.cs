@@ -416,4 +416,24 @@ public sealed class AudioManagedCoreTests
         Assert.DoesNotContain("80070005", result.ToString(), StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(exception.Message, result.ToString(), StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData(960, 960, 480, 0)]
+    [InlineData(1920, 960, 480, 3000)]
+    [InlineData(480, 960, 480, -2000)]
+    [InlineData(2880, 960, 480, 3000)]
+    [InlineData(0, 960, 480, -3000)]
+    public void QueueRateCorrectionIsProportionalAndBounded(
+        int queued,
+        int target,
+        int period,
+        double expectedPpm) =>
+        Assert.Equal(expectedPpm, AudioQueueRateControllerMath.CalculateAdjustmentPpm(queued, target, period), 6);
+
+    [Fact]
+    public void QueueRateCorrectionRejectsInvalidMeasurements()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => AudioQueueRateControllerMath.CalculateAdjustmentPpm(-1, 960, 480));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AudioQueueRateControllerMath.CalculateAdjustmentPpm(0, 960, 0));
+    }
 }

@@ -17,7 +17,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     private const int StopTimeoutSeconds = 3;
     private const int BufferPeriodCapacity = 6;
     private const int HighWatermarkPeriods = 6;
-    private const int TargetQueuePeriods = 3;
+    private const int TargetQueuePeriods = 2;
     private const uint WaitMilliseconds = 1000;
 
     private readonly AudioMonitorStartRequest request;
@@ -136,6 +136,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
         IAudioClient? renderClient = null;
         IAudioCaptureClient? captureService = null;
         IAudioRenderClient? renderService = null;
+        AudioQueueRateController? rateController = null;
         WAVEFORMATEX* renderMix = null;
         WAVEFORMATEX* captureMix = null;
         SafeFileHandle? captureEvent = null;
@@ -145,6 +146,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
         var comInitialized = false;
         var captureStarted = false;
         var renderStarted = false;
+        var rateControllerStopped = true;
         try
         {
             var apartment = PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED);
@@ -174,8 +176,8 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
                 checked((int)common.Format.nSamplesPerSec), common.Format.nChannels, common.dwChannelMask);
 
             var path = preferAudioClient3 && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 10240) &&
-                TryInitializeClient3Pair(captureClient, renderClient, &common, out var capturePeriod, out var renderPeriod)
-                ? AudioMonitorInitializationPath.AudioClient3
+                TryInitializeHybridPair(captureClient, renderClient, &common, out var capturePeriod, out var renderPeriod)
+                ? AudioMonitorInitializationPath.AudioClient3CaptureClassicRender
                 : InitializeClassicPair(captureClient, renderClient, &common, out capturePeriod, out renderPeriod);
 
             captureClient.GetBufferSize(out var captureBufferFramesNative);
@@ -197,6 +199,11 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
             var highWatermark = checked(stablePeriod * HighWatermarkPeriods);
             var startupTarget = Math.Min(checked(stablePeriod * TargetQueuePeriods), highWatermark);
             var ring = new AudioFrameRingBuffer(capacityFrames, managedFormat.ChannelCount, highWatermark);
+            rateController = new AudioQueueRateController(
+                renderClient, logger, managedFormat.SampleRate, startupTarget, stablePeriod);
+            if (!rateController.Start())
+                throw new AudioSessionException(AudioMonitorFailureCategory.UnsupportedAudioFormat,
+                    "The selected output does not support stable shared-mode audio monitoring.");
 
             var prefillFrames = checked((uint)Math.Min(renderPeriod, renderBufferFrames));
             PrefillRenderWithSilence(renderClient, renderPacketService, managedFormat.ChannelCount, prefillFrames);
@@ -213,17 +220,18 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
             DateTimeOffset? lastPacket = null;
             DateTimeOffset? lastRender = null;
             var diagnosticsClock = Stopwatch.StartNew();
-            var handles = new[] { ToHandle(localStopEvent), ToHandle(captureEvent), ToHandle(renderEvent) };
+            var startupHandles = new[] { ToHandle(localStopEvent), ToHandle(captureEvent) };
 
             while (ring.QueuedFrames < startupTarget && Volatile.Read(ref stopRequested) == 0)
             {
-                var wait = PInvoke.WaitForMultipleObjects(handles.AsSpan(0, 2), false, WaitMilliseconds);
+                var wait = PInvoke.WaitForMultipleObjects(startupHandles, false, WaitMilliseconds);
                 if (wait == WAIT_EVENT.WAIT_OBJECT_0) break;
                 if (wait == (WAIT_EVENT)((uint)WAIT_EVENT.WAIT_OBJECT_0 + 1))
                     ProcessCapture(capturePacketService, ring, managedFormat, ref framesCaptured, ref silentFrames,
                         ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket);
                 else if (wait == WAIT_EVENT.WAIT_FAILED)
                     throw new AudioSessionException(AudioMonitorFailureCategory.BufferFailure, "Audio event waiting failed.");
+                rateController.UpdateQueueDepth(ring.QueuedFrames);
             }
 
             if (Volatile.Read(ref stopRequested) != 0)
@@ -240,18 +248,32 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
                 $"{request.RenderEndpoint?.DisplayName ?? "System default output"}; {managedFormat}; {path}; " +
                 $"periods {capturePeriod}/{renderPeriod} frames; queue capacity {capacityFrames} frames.");
 
+            // A render wake reserves one output period and then drains any capture
+            // packet already available. A capture-only wake does not render early;
+            // this prevents both fixed-priority starvation and premature silence.
+            var monitoringHandles = new[] { ToHandle(localStopEvent), ToHandle(renderEvent), ToHandle(captureEvent) };
+
             while (Volatile.Read(ref stopRequested) == 0)
             {
-                var wait = PInvoke.WaitForMultipleObjects(handles, false, WaitMilliseconds);
+                var wait = PInvoke.WaitForMultipleObjects(monitoringHandles, false, WaitMilliseconds);
                 if (wait == WAIT_EVENT.WAIT_OBJECT_0) break;
                 if (wait == (WAIT_EVENT)((uint)WAIT_EVENT.WAIT_OBJECT_0 + 1))
-                    ProcessCapture(capturePacketService, ring, managedFormat, ref framesCaptured, ref silentFrames,
-                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket);
-                else if (wait == (WAIT_EVENT)((uint)WAIT_EVENT.WAIT_OBJECT_0 + 2))
+                {
                     ProcessRender(renderClient, renderPacketService, ring, managedFormat, gain, renderBufferFramesNative, renderPeriod,
                         ref framesRendered, ref silentFrames, ref lastRender);
+                    ProcessCapture(capturePacketService, ring, managedFormat, ref framesCaptured, ref silentFrames,
+                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket);
+                }
+                else if (wait == (WAIT_EVENT)((uint)WAIT_EVENT.WAIT_OBJECT_0 + 2))
+                    ProcessCapture(capturePacketService, ring, managedFormat, ref framesCaptured, ref silentFrames,
+                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket);
                 else if (wait == WAIT_EVENT.WAIT_FAILED)
                     throw new AudioSessionException(AudioMonitorFailureCategory.BufferFailure, "Audio event waiting failed.");
+
+                rateController.UpdateQueueDepth(ring.QueuedFrames);
+                if (!rateController.IsAvailable)
+                    throw new AudioSessionException(AudioMonitorFailureCategory.AudioProcessingFailure,
+                        "Windows audio rate adjustment became unavailable.");
 
                 if (diagnosticsClock.ElapsedMilliseconds >= 500)
                 {
@@ -284,6 +306,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
                         lastPacket,
                         lastRender,
                         null,
+                        rateController.AppliedAdjustmentPpm,
                         LastCaptureDevicePosition: lastDevicePosition,
                         LastCaptureQpcPosition: lastQpcPosition,
                         MmcssRegistered: mmcss is not null,
@@ -304,12 +327,16 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
         finally
         {
             startup.TrySetResult(AudioMonitorStartResult.Cancelled(SessionId));
+            if (rateController is not null) rateControllerStopped = rateController.Stop();
             TryCleanup(() => { if (captureStarted) captureClient?.Stop(); }, "capture stop");
             TryCleanup(() => { if (renderStarted) renderClient?.Stop(); }, "render stop");
             TryCleanup(() => ReleaseComObject(captureService), "capture-service release");
             TryCleanup(() => ReleaseComObject(renderService), "render-service release");
             TryCleanup(() => ReleaseComObject(captureClient), "capture-client release");
-            TryCleanup(() => ReleaseComObject(renderClient), "render-client release");
+            if (rateControllerStopped)
+                TryCleanup(() => ReleaseComObject(renderClient), "render-client release");
+            else
+                SafeWarning("The render client was retained because its queue-rate controller had not stopped.");
             TryCleanup(() => ReleaseComObject(captureDevice), "capture-endpoint release");
             TryCleanup(() => ReleaseComObject(renderDevice), "render-endpoint release");
             TryCleanup(() => ReleaseComObject(enumerator), "endpoint-enumerator release");
@@ -363,7 +390,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     }
 
     [SupportedOSPlatform("windows10.0.10240")]
-    private static unsafe bool TryInitializeClient3Pair(
+    private static unsafe bool TryInitializeHybridPair(
         IAudioClient capture,
         IAudioClient render,
         WAVEFORMATEXTENSIBLE* format,
@@ -372,22 +399,25 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     {
         capturePeriod = 0;
         renderPeriod = 0;
-        if (capture is not IAudioClient3 capture3 || render is not IAudioClient3 render3) return false;
+        if (capture is not IAudioClient3 capture3) return false;
         if (!IsExactlySupported(capture, &format->Format) || !IsExactlySupported(render, &format->Format)) return false;
         try
         {
             capture3.GetSharedModeEnginePeriod(&format->Format, out var captureDefault, out var captureFundamental, out var captureMinimum, out _);
-            render3.GetSharedModeEnginePeriod(&format->Format, out var renderDefault, out var renderFundamental, out var renderMinimum, out _);
-            var commonFundamental = LeastCommonMultiple(captureFundamental, renderFundamental);
-            var minimum = Math.Max(captureMinimum, renderMinimum);
-            var maximum = Math.Min(captureDefault, renderDefault);
-            var period = RoundDown(maximum, commonFundamental);
-            if (period < minimum || period > maximum) return false;
-            const uint flags = PInvoke.AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-            capture3.InitializeSharedAudioStream(flags, period, &format->Format, null);
-            render3.InitializeSharedAudioStream(flags, period, &format->Format, null);
+            var period = RoundDown(captureDefault, captureFundamental);
+            if (period < captureMinimum || period > captureDefault) return false;
+            capture3.InitializeSharedAudioStream(PInvoke.AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, &format->Format, null);
+
+            render.GetDevicePeriod(out var renderDefaultDuration, out _);
+            var capturePeriodDuration = checked((long)Math.Ceiling(period * 10_000_000d / format->Format.nSamplesPerSec));
+            var renderDuration = Math.Max(renderDefaultDuration, capturePeriodDuration);
+            var renderFlags = PInvoke.AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+                PInvoke.AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+                PInvoke.AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
+                PInvoke.AUDCLNT_STREAMFLAGS_RATEADJUST;
+            render.Initialize(AUDCLNT_SHAREMODE.AUDCLNT_SHAREMODE_SHARED, renderFlags, renderDuration, 0, &format->Format, null);
             capturePeriod = checked((int)period);
-            renderPeriod = checked((int)period);
+            renderPeriod = ReadCurrentRenderPeriod(render, format->Format.nSamplesPerSec, renderDefaultDuration);
             return true;
         }
         catch (COMException)
@@ -408,16 +438,35 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
         capture.GetDevicePeriod(out var captureDefault, out _);
         render.GetDevicePeriod(out var renderDefault, out _);
         var duration = Math.Max(captureDefault, renderDefault) * 2;
-        var flags = PInvoke.AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+        var captureFlags = PInvoke.AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
             PInvoke.AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
             PInvoke.AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-        capture.Initialize(AUDCLNT_SHAREMODE.AUDCLNT_SHAREMODE_SHARED, flags, duration, 0, &format->Format, null);
-        render.Initialize(AUDCLNT_SHAREMODE.AUDCLNT_SHAREMODE_SHARED, flags, duration, 0, &format->Format, null);
+        var renderFlags = captureFlags | PInvoke.AUDCLNT_STREAMFLAGS_RATEADJUST;
+        capture.Initialize(AUDCLNT_SHAREMODE.AUDCLNT_SHAREMODE_SHARED, captureFlags, duration, 0, &format->Format, null);
+        render.Initialize(AUDCLNT_SHAREMODE.AUDCLNT_SHAREMODE_SHARED, renderFlags, duration, 0, &format->Format, null);
         capture.GetBufferSize(out var captureFrames);
-        render.GetBufferSize(out var renderFrames);
+        render.GetBufferSize(out _);
         capturePeriod = checked((int)Math.Max(1, captureFrames / 2));
-        renderPeriod = checked((int)Math.Max(1, renderFrames / 2));
+        renderPeriod = ReadCurrentRenderPeriod(render, format->Format.nSamplesPerSec, renderDefault);
         return AudioMonitorInitializationPath.ClassicSharedFallback;
+    }
+
+    private static unsafe int ReadCurrentRenderPeriod(IAudioClient render, uint sampleRate, long defaultDuration)
+    {
+        if (render is IAudioClient3 render3 && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 10240))
+        {
+            WAVEFORMATEX* currentFormat = null;
+            try
+            {
+                render3.GetCurrentSharedModeEnginePeriod(out currentFormat, out var currentPeriod);
+                if (currentPeriod > 0) return checked((int)currentPeriod);
+            }
+            catch (COMException) { }
+            finally { if (currentFormat is not null) PInvoke.CoTaskMemFree(currentFormat); }
+        }
+
+        var frames = checked((long)Math.Round(defaultDuration * sampleRate / 10_000_000d, MidpointRounding.AwayFromZero));
+        return checked((int)Math.Max(1, frames));
     }
 
     private static unsafe bool IsExactlySupported(IAudioClient client, WAVEFORMATEX* format)
@@ -520,18 +569,6 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
         }
         catch (DllNotFoundException) { return null; }
         catch (EntryPointNotFoundException) { return null; }
-    }
-
-    private static uint LeastCommonMultiple(uint left, uint right)
-    {
-        if (left == 0 || right == 0) return 0;
-        return checked(left / GreatestCommonDivisor(left, right) * right);
-    }
-
-    private static uint GreatestCommonDivisor(uint left, uint right)
-    {
-        while (right != 0) (left, right) = (right, left % right);
-        return left;
     }
 
     private static uint RoundDown(uint value, uint multiple) => multiple == 0 ? 0 : value / multiple * multiple;

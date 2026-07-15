@@ -38,6 +38,7 @@ public enum AudioMonitorFailureCategory
 public enum AudioMonitorInitializationPath
 {
     AudioClient3,
+    AudioClient3CaptureClassicRender,
     ClassicSharedFallback
 }
 
