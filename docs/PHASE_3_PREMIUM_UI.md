@@ -22,6 +22,26 @@ Audio, recording, snapshots, fullscreen behavior, reconnect, image controls, pay
 
 Primary and muted text palettes are automatically checked against their surfaces at WCAG normal-text contrast thresholds. Disabled controls use a separate readable palette and explicit Automation names rather than opacity-only communication. Reduced motion is naturally respected because the shell adds no decorative animation.
 
+### Measurement system
+
+The production shell uses a 4-DIP atomic grid and an 8-DIP primary spacing rhythm. Approved spacing steps are 4, 8, 12, 16, 20, 24, 32, 36, and 48 DIPs. `DesignTokens.xaml` is the XAML authority for these values and for semantic uses including:
+
+- `PagePadding` 24 and `CardPadding` 16;
+- 16-DIP section gaps and 8-DIP field gaps;
+- 12-DIP control and wide-column gaps;
+- 32-DIP preview-message padding;
+- 16-DIP dialog section gaps and a 24-DIP dialog action gap;
+- 12-by-8 status-bar padding and 12-by-4 status-badge padding;
+- 8, 12, and 16-DIP corner radii.
+
+The typography scale is 12 DIPs for field/eyebrow labels, 14 for body text, 16 for card headings, 22 for preview and dialog headings, and 24 for the application title. Body and supporting copy use a consistent 20-DIP line height where an explicit line height is required. Segoe UI Variable Text/Display and the existing Segoe UI fallback remain unchanged.
+
+Standard buttons are 40 DIPs high and selectors are 44 DIPs high. Button padding is 16 by 8 DIPs, selector and selector-item padding is 12 by 8 DIPs, standard button minimum width is 88 DIPs, and the primary Start/Stop minimum width is 112 DIPs. Buttons carry no implicit trailing margin: each group declares its own 8- or 12-DIP gap so the last item cannot shift the group's optical center.
+
+`LayoutMetrics` is the managed authority for responsive values used by code-behind. In wide mode the configuration card is `* / 12 / *`, so Device and Format each receive `(usable width - 12) / 2`. Below the single 900-DIP breakpoint, the gap and second star column collapse; Format moves below Device at full width with a 16-DIP vertical gap. The action group similarly moves below its description with a 16-DIP gap. The deterministic policy is narrow at 720 and 899 DIPs and wide at 900 and 1180 DIPs.
+
+Documented measurement exceptions are deliberate rather than spacing drift: the 1- and 2-DIP border/focus strokes are device-pixel visual lines; the 9-by-5 selector chevron and 24-DIP monitor glyph retain their vector geometry; the 20-DIP line height is a typography calculation; and the 1180-by-780 default window, 720-by-620 minimum window, 220-DIP preview minimum, 520-DIP dialog width, 560-DIP preview-copy maximum, and 300-DIP selector-popup maximum are content/work-area constraints. These values remain on the 4-DIP grid where applicable and are represented by named resources.
+
 ## Responsive and accessible interaction
 
 At widths below 900 device-independent pixels, device and format selectors stack and action buttons move below their explanatory text. The supported minimum window is 720 by 620 DIPs. The preview keeps a 220-DIP minimum height. Long device names, format labels, and status text trim without pushing controls outside their grids, and the complete values remain available through tooltips.
@@ -67,3 +87,13 @@ A webcam validates generic UVC behavior only. Physical USB HDMI capture-card com
 - The 720-DIP minimum width, maximized layout, narrow Settings/Help panels, and the high-DPI startup clamp were reviewed without clipped text, overlap, lost selectors/status, out-of-window dialogs, or native HWND airspace over WPF content.
 - High-contrast support was not validated and remains explicitly deferred. Physical USB HDMI capture-card validation remains mandatory before Microsoft Store release.
 - Updated screenshots are retained outside the repository; screenshots, logs, and camera media are not committed.
+
+## Geometry and measurement lock — 2026-07-15
+
+- The shell was normalized to the documented 4-DIP atomic grid, 8-DIP primary rhythm, semantic spacing resources, typography scale, 40-DIP buttons, 44-DIP selectors, and 8/12/16-DIP radii.
+- Responsive code now uses `LayoutMetrics`; the wide selector columns are mathematically equal around one 12-DIP gap, while narrow selectors and actions stack with exact 16-DIP separation.
+- 267 ordinary hardware-independent tests passed, including semantic-token, grid-alignment, shared-control-height, wide-column, breakpoint, preview-star-row, action-ownership, and minimum-width-capacity contracts.
+- Release x64 restore/build completed with zero warnings and zero errors.
+- Manual dark/light, 720-DIP, normal/maximized, and 100/125/150/200-percent checks confirmed aligned selectors, equal action gaps, centered upcoming labeling, readable text, and a preview-dominant hierarchy.
+- HD Camera ready, Previewing, stopped, information-dialog, failure, Stop/release, and close/release paths remained functional. Capture and native-rendering sources were not changed.
+- Privacy-safe screenshots remain outside the repository; no screenshot, log, generated package, or captured camera media is committed.

@@ -4,35 +4,40 @@
         <Setter Property="Background" Value="{DynamicResource WindowBackgroundBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
         <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
-        <Setter Property="FontSize" Value="14" />
+        <Setter Property="FontSize" Value="{StaticResource BodyFontSize}" />
     </Style>
     <Style TargetType="TextBlock">
         <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
     </Style>
     <Style x:Key="TitleText" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="Segoe UI Variable Display, Segoe UI" />
-        <Setter Property="FontSize" Value="24" />
+        <Setter Property="FontSize" Value="{StaticResource ApplicationTitleFontSize}" />
         <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
     <Style x:Key="SubtitleText" TargetType="TextBlock">
-        <Setter Property="Margin" Value="0,3,0,0" />
+        <Setter Property="Margin" Value="{StaticResource SubtitleGap}" />
         <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+        <Setter Property="LineHeight" Value="{StaticResource BodyLineHeight}" />
     </Style>
     <Style x:Key="CardTitle" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="15" />
+        <Setter Property="FontSize" Value="{StaticResource CardHeadingFontSize}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style x:Key="DialogTitle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource PreviewHeadingFontSize}" />
         <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
     <Style x:Key="FieldLabel" TargetType="TextBlock">
-        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontSize" Value="{StaticResource FieldFontSize}" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
-        <Setter Property="Margin" Value="0,0,0,7" />
+        <Setter Property="Margin" Value="{StaticResource FieldGapBottom}" />
     </Style>
     <Style x:Key="FieldLabelControl" TargetType="Label">
-        <Setter Property="FontSize" Value="11" />
+        <Setter Property="FontSize" Value="{StaticResource FieldFontSize}" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
-        <Setter Property="Margin" Value="0,0,0,7" />
+        <Setter Property="Margin" Value="{StaticResource FieldGapBottom}" />
         <Setter Property="Padding" Value="0" />
     </Style>
     <Style x:Key="Card" TargetType="Border">
@@ -47,27 +52,27 @@
         <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="{StaticResource RadiusLarge}" />
-        <Setter Property="MinHeight" Value="220" />
+        <Setter Property="MinHeight" Value="{StaticResource PreviewMinimumHeight}" />
     </Style>
     <Style x:Key="PreviewGlyph" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
-        <Setter Property="FontSize" Value="32" />
+        <Setter Property="FontSize" Value="{StaticResource PreviewGlyphSize}" />
         <Setter Property="Foreground" Value="#FFF5F7FB" />
         <Setter Property="HorizontalAlignment" Value="Center" />
     </Style>
     <Style x:Key="PreviewMessage" TargetType="TextBlock">
-        <Setter Property="Margin" Value="0,14,0,0" />
-        <Setter Property="FontSize" Value="21" />
+        <Setter Property="Margin" Value="{StaticResource PreviewTitleGap}" />
+        <Setter Property="FontSize" Value="{StaticResource PreviewHeadingFontSize}" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="#FFF5F7FB" />
     </Style>
     <Style x:Key="PreviewDescription" TargetType="TextBlock">
-        <Setter Property="Margin" Value="0,8,0,0" />
+        <Setter Property="Margin" Value="{StaticResource PreviewDescriptionGap}" />
         <Setter Property="Foreground" Value="#FFC5CEDC" />
-        <Setter Property="LineHeight" Value="20" />
+        <Setter Property="LineHeight" Value="{StaticResource BodyLineHeight}" />
     </Style>
     <Style x:Key="SelectorItemStyle" TargetType="ComboBoxItem">
-        <Setter Property="Padding" Value="10,8" />
+        <Setter Property="Padding" Value="{StaticResource SelectorItemPadding}" />
         <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -77,8 +82,8 @@
         </Style.Triggers>
     </Style>
     <Style x:Key="SelectorControl" TargetType="ComboBox">
-        <Setter Property="Height" Value="42" />
-        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="Height" Value="{StaticResource SelectorHeight}" />
+        <Setter Property="Padding" Value="{StaticResource SelectorContentPadding}" />
         <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
         <Setter Property="Background" Value="{DynamicResource SurfaceSecondaryBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
@@ -95,9 +100,9 @@
                             </ToggleButton.Template>
                         </ToggleButton>
                         <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" TextElement.Foreground="{TemplateBinding Foreground}" />
-                        <Path Width="9" Height="5" Margin="0,0,14,0" HorizontalAlignment="Right" VerticalAlignment="Center" IsHitTestVisible="False" Fill="{DynamicResource MutedTextBrush}" Stretch="Fill" Data="M0,0 L4.5,5 L9,0 Z" />
+                        <Path Width="9" Height="5" Margin="0,0,16,0" HorizontalAlignment="Right" VerticalAlignment="Center" IsHitTestVisible="False" Fill="{DynamicResource MutedTextBrush}" Stretch="Fill" Data="M0,0 L4.5,5 L9,0 Z" />
                         <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="None">
-                            <Border Margin="0,4,0,0" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="300" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusSmall}">
+                            <Border Margin="{StaticResource PopupOffset}" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{StaticResource SelectorPopupMaxHeight}" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="{StaticResource RadiusSmall}">
                                 <ScrollViewer VerticalScrollBarVisibility="Auto" CanContentScroll="True"><ItemsPresenter /></ScrollViewer>
                             </Border>
                         </Popup>
@@ -111,10 +116,9 @@
         </Setter>
     </Style>
     <Style x:Key="BaseButton" TargetType="Button">
-        <Setter Property="MinWidth" Value="86" />
-        <Setter Property="Height" Value="38" />
-        <Setter Property="Margin" Value="0,0,8,0" />
-        <Setter Property="Padding" Value="14,5" />
+        <Setter Property="MinWidth" Value="{StaticResource StandardButtonMinWidth}" />
+        <Setter Property="Height" Value="{StaticResource ControlHeight}" />
+        <Setter Property="Padding" Value="{StaticResource ButtonContentPadding}" />
         <Setter Property="Focusable" Value="True" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
@@ -138,7 +142,7 @@
         <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
         <Setter Property="Foreground" Value="White" />
-        <Setter Property="MinWidth" Value="112" />
+        <Setter Property="MinWidth" Value="{StaticResource PrimaryButtonMinWidth}" />
     </Style>
     <Style x:Key="SecondaryButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
         <Setter Property="Background" Value="{DynamicResource SurfaceSecondaryBrush}" />
@@ -149,7 +153,7 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
-        <Setter Property="MinWidth" Value="76" />
+        <Setter Property="MinWidth" Value="{StaticResource QuietButtonMinWidth}" />
         <Style.Triggers>
             <MultiTrigger>
                 <MultiTrigger.Conditions><Condition Property="IsMouseOver" Value="True" /><Condition Property="IsEnabled" Value="True" /></MultiTrigger.Conditions>
@@ -169,7 +173,7 @@
         <Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" />
     </Style>
     <Style x:Key="StatusBar" TargetType="Border" BasedOn="{StaticResource Card}">
-        <Setter Property="Padding" Value="12,9" />
+        <Setter Property="Padding" Value="{StaticResource StatusBarPadding}" />
         <Setter Property="CornerRadius" Value="{StaticResource RadiusSmall}" />
     </Style>
     <Style x:Key="DialogOverlay" TargetType="Border">

@@ -1,16 +1,75 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:sys="clr-namespace:System;assembly=System.Runtime">
+    <!-- Four-DIP atomic grid with an eight-DIP primary rhythm. -->
     <sys:Double x:Key="Space4">4</sys:Double>
     <sys:Double x:Key="Space8">8</sys:Double>
     <sys:Double x:Key="Space12">12</sys:Double>
     <sys:Double x:Key="Space16">16</sys:Double>
     <sys:Double x:Key="Space20">20</sys:Double>
     <sys:Double x:Key="Space24">24</sys:Double>
-    <CornerRadius x:Key="RadiusSmall">6</CornerRadius>
-    <CornerRadius x:Key="RadiusMedium">10</CornerRadius>
-    <CornerRadius x:Key="RadiusLarge">14</CornerRadius>
+    <sys:Double x:Key="Space32">32</sys:Double>
+    <sys:Double x:Key="Space36">36</sys:Double>
+    <sys:Double x:Key="Space48">48</sys:Double>
+
+    <!-- Typography scale. -->
+    <sys:Double x:Key="FieldFontSize">12</sys:Double>
+    <sys:Double x:Key="BodyFontSize">14</sys:Double>
+    <sys:Double x:Key="CardHeadingFontSize">16</sys:Double>
+    <sys:Double x:Key="PreviewHeadingFontSize">22</sys:Double>
+    <sys:Double x:Key="ApplicationTitleFontSize">24</sys:Double>
+    <sys:Double x:Key="BodyLineHeight">20</sys:Double>
+    <sys:Double x:Key="PreviewGlyphSize">32</sys:Double>
+
+    <!-- Standard control and window dimensions. -->
+    <sys:Double x:Key="ControlHeight">40</sys:Double>
+    <sys:Double x:Key="SelectorHeight">44</sys:Double>
+    <sys:Double x:Key="HeaderIconSize">44</sys:Double>
+    <sys:Double x:Key="HeaderGlyphSize">24</sys:Double>
+    <sys:Double x:Key="StandardButtonMinWidth">88</sys:Double>
+    <sys:Double x:Key="PrimaryButtonMinWidth">112</sys:Double>
+    <sys:Double x:Key="QuietButtonMinWidth">76</sys:Double>
+    <sys:Double x:Key="WindowDefaultWidth">1180</sys:Double>
+    <sys:Double x:Key="WindowDefaultHeight">780</sys:Double>
+    <sys:Double x:Key="WindowMinimumWidth">720</sys:Double>
+    <sys:Double x:Key="WindowMinimumHeight">620</sys:Double>
+    <sys:Double x:Key="PreviewMinimumHeight">220</sys:Double>
+    <sys:Double x:Key="PreviewMessageMaxWidth">560</sys:Double>
+    <sys:Double x:Key="DialogWidth">520</sys:Double>
+    <sys:Double x:Key="SelectorPopupMaxHeight">300</sys:Double>
+
+    <!-- Consistent geometry. -->
+    <CornerRadius x:Key="RadiusSmall">8</CornerRadius>
+    <CornerRadius x:Key="RadiusMedium">12</CornerRadius>
+    <CornerRadius x:Key="RadiusLarge">16</CornerRadius>
+    <GridLength x:Key="ControlGapLength">12</GridLength>
+
+    <!-- Semantic spacing tokens. -->
     <Thickness x:Key="PagePadding">24</Thickness>
     <Thickness x:Key="CardPadding">16</Thickness>
+    <Thickness x:Key="SectionGapTop">0,16,0,0</Thickness>
+    <Thickness x:Key="SectionGapBottom">0,0,0,16</Thickness>
+    <Thickness x:Key="FieldGapBottom">0,0,0,8</Thickness>
+    <Thickness x:Key="FieldGapRight">0,0,8,0</Thickness>
+    <Thickness x:Key="ControlGapRight">0,0,12,0</Thickness>
+    <Thickness x:Key="CardToStatusGap">0,0,0,12</Thickness>
+    <Thickness x:Key="HeaderIconGap">0,0,12,0</Thickness>
+    <Thickness x:Key="SubtitleGap">0,4,0,0</Thickness>
+    <Thickness x:Key="PreviewContentPadding">32</Thickness>
+    <Thickness x:Key="PreviewTitleGap">0,16,0,0</Thickness>
+    <Thickness x:Key="PreviewDescriptionGap">0,8,0,0</Thickness>
+    <Thickness x:Key="SelectorContentPadding">12,8</Thickness>
+    <Thickness x:Key="SelectorItemPadding">12,8</Thickness>
+    <Thickness x:Key="SelectorPlaceholderPadding">12,0,36,0</Thickness>
+    <Thickness x:Key="ButtonContentPadding">16,8</Thickness>
+    <Thickness x:Key="PopupOffset">0,4,0,0</Thickness>
+    <Thickness x:Key="StatusBarPadding">12,8</Thickness>
+    <Thickness x:Key="StatusDotGap">0,0,8,0</Thickness>
+    <Thickness x:Key="StatusBadgeGap">16,0,0,0</Thickness>
+    <Thickness x:Key="StatusBadgePadding">12,4</Thickness>
+    <Thickness x:Key="DialogMargin">24</Thickness>
+    <Thickness x:Key="DialogPadding">24</Thickness>
+    <Thickness x:Key="DialogSectionGap">0,16,0,0</Thickness>
+    <Thickness x:Key="DialogActionGap">0,24,0,0</Thickness>
     <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
 </ResourceDictionary>

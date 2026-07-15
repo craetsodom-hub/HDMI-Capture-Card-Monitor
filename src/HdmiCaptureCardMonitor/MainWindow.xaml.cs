@@ -116,13 +116,17 @@ public partial class MainWindow : Window, IDisposable
     private void ApplyResponsiveLayout(double windowWidth)
     {
         var stacked = ResponsiveLayoutPolicy.UsesStackedSelectors(windowWidth);
-        Grid.SetColumn(FormatPanel, stacked ? 0 : 1);
+        DeviceColumn.Width = LayoutMetrics.StarColumn;
+        ConfigurationGapColumn.Width = stacked ? LayoutMetrics.CollapsedColumn : LayoutMetrics.WideControlGapColumn;
+        FormatColumn.Width = stacked ? LayoutMetrics.CollapsedColumn : LayoutMetrics.StarColumn;
+
+        Grid.SetColumn(FormatPanel, stacked ? 0 : 2);
         Grid.SetRow(FormatPanel, stacked ? 1 : 0);
-        FormatPanel.Margin = stacked ? new Thickness(0, 14, 0, 0) : new Thickness(14, 0, 0, 0);
+        FormatPanel.Margin = stacked ? LayoutMetrics.StackedSectionMargin : LayoutMetrics.NoMargin;
 
         Grid.SetColumn(ActionButtons, stacked ? 0 : 1);
         Grid.SetRow(ActionButtons, stacked ? 1 : 0);
-        ActionButtons.Margin = stacked ? new Thickness(0, 12, 0, 0) : new Thickness(0);
+        ActionButtons.Margin = stacked ? LayoutMetrics.StackedSectionMargin : LayoutMetrics.NoMargin;
         ActionButtons.HorizontalAlignment = stacked ? HorizontalAlignment.Left : HorizontalAlignment.Right;
     }
 

@@ -58,6 +58,7 @@ public sealed class PhaseThreeUiTests
 
     [Theory]
     [InlineData(719, true)]
+    [InlineData(720, true)]
     [InlineData(899, true)]
     [InlineData(900, false)]
     [InlineData(1180, false)]
@@ -212,6 +213,108 @@ public sealed class PhaseThreeUiTests
         Assert.False(currentTheme.SetMethod?.IsPublic ?? false);
     }
 
+    [Fact]
+    public void MeasurementSystemDeclaresRequiredSemanticTokensOnTheApprovedGrid()
+    {
+        var tokens = LoadTheme("Resources/Themes/DesignTokens.xaml");
+        int[] approvedSpacing = [4, 8, 12, 16, 20, 24, 32, 36, 48];
+        string[] requiredSemanticTokens =
+        [
+            "PagePadding", "CardPadding", "SectionGapTop", "SectionGapBottom",
+            "FieldGapBottom", "ControlGapRight", "DialogSectionGap", "DialogActionGap",
+            "PreviewContentPadding", "ControlHeight", "SelectorHeight", "StatusBarPadding"
+        ];
+
+        foreach (var value in approvedSpacing)
+        {
+            Assert.Equal(value.ToString(System.Globalization.CultureInfo.InvariantCulture), ResourceValue(tokens, $"Space{value}"));
+        }
+
+        Assert.All(requiredSemanticTokens, key => Assert.NotNull(ResourceElement(tokens, key)));
+        Assert.All(tokens.Descendants().Where(element => element.Name.LocalName == "Thickness"), thickness =>
+        {
+            var components = thickness.Value.Split(',').Select(int.Parse);
+            Assert.All(components, value => Assert.True(value == 0 || approvedSpacing.Contains(value), $"{ResourceKey(thickness)} contains off-grid spacing {value}."));
+        });
+        Assert.Equal("8", ResourceValue(tokens, "RadiusSmall"));
+        Assert.Equal("12", ResourceValue(tokens, "RadiusMedium"));
+        Assert.Equal("16", ResourceValue(tokens, "RadiusLarge"));
+    }
+
+    [Fact]
+    public void SharedStylesUseTheStandardControlDimensions()
+    {
+        var controls = LoadTheme("Resources/Themes/Controls.xaml");
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var baseButton = FindStyle(controls, x, "BaseButton");
+        var selector = FindStyle(controls, x, "SelectorControl");
+
+        Assert.Contains(baseButton.Elements(), element => IsSetter(element, "Height", "{StaticResource ControlHeight}"));
+        Assert.Contains(selector.Elements(), element => IsSetter(element, "Height", "{StaticResource SelectorHeight}"));
+        Assert.Contains(baseButton.Elements(), element => IsSetter(element, "Padding", "{StaticResource ButtonContentPadding}"));
+        Assert.Contains(selector.Elements(), element => IsSetter(element, "Padding", "{StaticResource SelectorContentPadding}"));
+    }
+
+    [Fact]
+    public void ResponsiveGeometryUsesLayoutMetricsAndEqualWideColumns()
+    {
+        var root = FindRepositoryRoot();
+        var code = File.ReadAllText(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "MainWindow.xaml.cs"));
+        var window = XDocument.Load(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "MainWindow.xaml"));
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var configuration = window.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute(x + "Name"), "ConfigurationGrid", StringComparison.Ordinal));
+        var columns = configuration.Elements().Single(element => element.Name.LocalName == "Grid.ColumnDefinitions").Elements().ToArray();
+
+        Assert.Contains("LayoutMetrics.StackedSectionMargin", code, StringComparison.Ordinal);
+        Assert.Contains("LayoutMetrics.WideControlGapColumn", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("new Thickness(", code, StringComparison.Ordinal);
+        Assert.Equal("*", (string?)columns[0].Attribute("Width"));
+        Assert.Equal("{StaticResource ControlGapLength}", (string?)columns[1].Attribute("Width"));
+        Assert.Equal("*", (string?)columns[2].Attribute("Width"));
+        Assert.Equal("DeviceColumn", (string?)columns[0].Attribute(x + "Name"));
+        Assert.Equal("FormatColumn", (string?)columns[2].Attribute(x + "Name"));
+    }
+
+    [Fact]
+    public void MainWindowKeepsPreviewDominantAndFutureActionsSeparate()
+    {
+        var root = FindRepositoryRoot();
+        var window = XDocument.Load(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "MainWindow.xaml"));
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var mainContent = window.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute(x + "Name"), "MainContent", StringComparison.Ordinal));
+        var rows = mainContent.Elements().Single(element => element.Name.LocalName == "Grid.RowDefinitions").Elements().ToArray();
+        var start = window.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute(x + "Name"), "StartStopButton", StringComparison.Ordinal));
+        var upcoming = window.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute(x + "Name"), "UpcomingActions", StringComparison.Ordinal));
+        var futureButtons = upcoming.Descendants().Where(element => element.Name.LocalName == "Button").ToArray();
+
+        Assert.Equal("*", (string?)rows[1].Attribute("Height"));
+        Assert.Equal("{StaticResource PreviewMinimumHeight}", (string?)rows[1].Attribute("MinHeight"));
+        Assert.Equal(3, futureButtons.Length);
+        Assert.All(futureButtons, button => Assert.Equal("False", (string?)button.Attribute("IsEnabled")));
+        Assert.DoesNotContain(start, upcoming.Descendants());
+    }
+
+    [Fact]
+    public void DeclaredMinimumWidthAccommodatesEveryCaptureAction()
+    {
+        var innerCardWidth = LayoutMetrics.MinimumWindowWidth -
+                             (2 * LayoutMetrics.PagePadding) -
+                             (2 * LayoutMetrics.CardPadding);
+        var actionWidth = LayoutMetrics.PrimaryButtonMinimumWidth +
+                          LayoutMetrics.ControlGap +
+                          (3 * LayoutMetrics.StandardButtonMinimumWidth) +
+                          (2 * LayoutMetrics.ControlGap);
+
+        Assert.True(innerCardWidth >= actionWidth);
+        Assert.True(ResponsiveLayoutPolicy.UsesStackedSelectors(LayoutMetrics.MinimumWindowWidth));
+        Assert.False(ResponsiveLayoutPolicy.UsesStackedSelectors(LayoutMetrics.NarrowWindowThreshold));
+        Assert.False(ResponsiveLayoutPolicy.UsesStackedSelectors(LayoutMetrics.DefaultWindowWidth));
+    }
+
     private static XDocument LoadTheme(string path)
     {
         var root = FindRepositoryRoot();
@@ -222,6 +325,22 @@ public sealed class PhaseThreeUiTests
         document.Descendants().Single(element =>
             element.Name.LocalName == "Style" &&
             string.Equals((string?)element.Attribute(x + "Key"), key, StringComparison.Ordinal));
+
+    private static XElement? ResourceElement(XDocument document, string key)
+    {
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        return document.Descendants().SingleOrDefault(element =>
+            string.Equals((string?)element.Attribute(x + "Key"), key, StringComparison.Ordinal));
+    }
+
+    private static string ResourceValue(XDocument document, string key) =>
+        ResourceElement(document, key)?.Value ?? throw new InvalidOperationException($"Missing design token {key}.");
+
+    private static string ResourceKey(XElement element)
+    {
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        return (string?)element.Attribute(x + "Key") ?? element.Name.LocalName;
+    }
 
     private static bool IsSetter(XElement element, string property, string value) =>
         element.Name.LocalName == "Setter" &&

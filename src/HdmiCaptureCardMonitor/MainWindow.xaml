@@ -7,7 +7,8 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="HDMI Capture Card Monitor"
-        Width="1180" Height="780" MinWidth="720" MinHeight="620"
+        Width="{StaticResource WindowDefaultWidth}" Height="{StaticResource WindowDefaultHeight}"
+        MinWidth="{StaticResource WindowMinimumWidth}" MinHeight="{StaticResource WindowMinimumHeight}"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource WindowBackgroundBrush}"
         Foreground="{DynamicResource PrimaryTextBrush}"
@@ -21,19 +22,19 @@
         <Grid x:Name="MainContent" IsEnabled="{Binding IsMainContentEnabled}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" MinHeight="220" />
+                <RowDefinition Height="*" MinHeight="{StaticResource PreviewMinimumHeight}" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Margin="0,0,0,18">
+        <Grid Grid.Row="0" Margin="{StaticResource SectionGapBottom}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <Border Width="44" Height="44" CornerRadius="10" Background="{DynamicResource AccentBrush}" Margin="0,0,12,0" AutomationProperties.Name="Application icon">
-                <Viewbox Width="25" Height="25">
+            <Border Width="{StaticResource HeaderIconSize}" Height="{StaticResource HeaderIconSize}" CornerRadius="{StaticResource RadiusMedium}" Background="{DynamicResource AccentBrush}" Margin="{StaticResource HeaderIconGap}" AutomationProperties.Name="Application icon">
+                <Viewbox Width="{StaticResource HeaderGlyphSize}" Height="{StaticResource HeaderGlyphSize}">
                     <Canvas Width="24" Height="24">
                         <Path Fill="White" Data="M3,4 L21,4 L21,17 L14,17 L14,19 L18,19 L18,21 L6,21 L6,19 L10,19 L10,17 L3,17 Z M5,6 L5,15 L19,15 L19,6 Z" />
                         <Path Fill="White" Data="M9,9 L15,12 L9,15 Z" />
@@ -45,15 +46,15 @@
                 <TextBlock Text="A focused monitor for USB video capture" Style="{StaticResource SubtitleText}" />
             </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="SettingsButton" Content="Se_ttings" Command="{Binding ShowSettingsInformationCommand}" Style="{StaticResource QuietButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Settings}" ToolTip="Open settings information" />
+                <Button x:Name="SettingsButton" Content="Se_ttings" Command="{Binding ShowSettingsInformationCommand}" Style="{StaticResource QuietButton}" Margin="{StaticResource FieldGapRight}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Settings}" ToolTip="Open settings information" />
                 <Button x:Name="HelpButton" Content="_Help" Command="{Binding ShowHelpInformationCommand}" Style="{StaticResource QuietButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Help}" ToolTip="Open help" />
             </StackPanel>
         </Grid>
 
-        <Border Grid.Row="1" Style="{StaticResource PreviewSurface}" Margin="0,0,0,16" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.PreviewArea}">
+        <Border Grid.Row="1" Style="{StaticResource PreviewSurface}" Margin="{StaticResource SectionGapBottom}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.PreviewArea}">
             <Grid>
                 <controls:HwndPreviewSurface x:Name="PreviewHost" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Focusable="False" />
-                <StackPanel MaxWidth="560" Margin="36" HorizontalAlignment="Center" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite">
+                <StackPanel MaxWidth="{StaticResource PreviewMessageMaxWidth}" Margin="{StaticResource PreviewContentPadding}" HorizontalAlignment="Center" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite">
                     <StackPanel.Style>
                         <Style TargetType="StackPanel">
                             <Setter Property="Visibility" Value="Visible" />
@@ -69,7 +70,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,0,0,12">
+        <Border Grid.Row="2" Style="{StaticResource Card}" Margin="{StaticResource CardToStatusGap}">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -81,8 +82,9 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition x:Name="DeviceColumn" Width="*" />
+                        <ColumnDefinition x:Name="ConfigurationGapColumn" Width="{StaticResource ControlGapLength}" />
+                        <ColumnDefinition x:Name="FormatColumn" Width="*" />
                     </Grid.ColumnDefinitions>
 
                     <StackPanel x:Name="DevicePanel">
@@ -94,7 +96,7 @@
                             <ComboBox x:Name="DeviceSelector" ItemsSource="{Binding Devices}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedDevice}" IsEnabled="{Binding HasDevices}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.DeviceSelector}" ToolTip="{Binding SelectedItem.DisplayName, ElementName=DeviceSelector}">
                                 <ComboBox.ItemContainerStyle><Style TargetType="ComboBoxItem" BasedOn="{StaticResource SelectorItemStyle}"><Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" /></Style></ComboBox.ItemContainerStyle>
                             </ComboBox>
-                            <TextBlock Text="{Binding DevicePlaceholder}" IsHitTestVisible="False" Margin="12,0,36,0" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
+                            <TextBlock Text="{Binding DevicePlaceholder}" IsHitTestVisible="False" Margin="{StaticResource SelectorPlaceholderPadding}" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Visibility" Value="Collapsed" />
@@ -108,13 +110,13 @@
                         </Grid>
                     </StackPanel>
 
-                    <StackPanel x:Name="FormatPanel" Grid.Column="1" Margin="14,0,0,0">
+                    <StackPanel x:Name="FormatPanel" Grid.Column="2">
                         <Label Content="_Format" Target="{Binding ElementName=FormatSelector}" Style="{StaticResource FieldLabelControl}" />
                         <Grid>
                             <ComboBox x:Name="FormatSelector" ItemsSource="{Binding Formats}" DisplayMemberPath="DisplayLabel" SelectedItem="{Binding SelectedFormat}" IsEnabled="{Binding HasFormats}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.FormatSelector}" ToolTip="{Binding SelectedItem.DisplayLabel, ElementName=FormatSelector}">
                                 <ComboBox.ItemContainerStyle><Style TargetType="ComboBoxItem" BasedOn="{StaticResource SelectorItemStyle}"><Setter Property="AutomationProperties.Name" Value="{Binding DisplayLabel}" /></Style></ComboBox.ItemContainerStyle>
                             </ComboBox>
-                            <TextBlock Text="{Binding FormatPlaceholder}" IsHitTestVisible="False" Margin="12,0,36,0" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
+                            <TextBlock Text="{Binding FormatPlaceholder}" IsHitTestVisible="False" Margin="{StaticResource SelectorPlaceholderPadding}" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Visibility" Value="Collapsed" />
@@ -129,7 +131,7 @@
                     </StackPanel>
                 </Grid>
 
-                <Grid x:Name="ActionGrid" Grid.Row="1" Margin="0,14,0,0">
+                <Grid x:Name="ActionGrid" Grid.Row="1" Margin="{StaticResource SectionGapTop}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -143,12 +145,12 @@
                         <TextBlock Text="{Binding PreviewControlHint}" Style="{StaticResource SubtitleText}" TextWrapping="Wrap" />
                     </StackPanel>
                     <StackPanel x:Name="ActionButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <Button x:Name="StartStopButton" Content="{Binding StartStopAccessText}" Command="{Binding TogglePreviewCommand}" Style="{StaticResource PrimaryButton}" VerticalAlignment="Bottom" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.StartStopPreview}" />
+                        <Button x:Name="StartStopButton" Content="{Binding StartStopAccessText}" Command="{Binding TogglePreviewCommand}" Style="{StaticResource PrimaryButton}" Margin="{StaticResource ControlGapRight}" VerticalAlignment="Bottom" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.StartStopPreview}" />
                         <StackPanel x:Name="UpcomingActions">
-                            <TextBlock Text="UPCOMING" Style="{StaticResource FieldLabel}" Margin="0,0,8,4" HorizontalAlignment="Stretch" TextAlignment="Center" />
+                            <TextBlock Text="UPCOMING" Style="{StaticResource FieldLabel}" HorizontalAlignment="Stretch" TextAlignment="Center" />
                             <WrapPanel>
-                                <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.FullscreenUpcoming}" ToolTip="Upcoming feature" />
-                                <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.SnapshotUpcoming}" ToolTip="Upcoming feature" />
+                                <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource UpcomingButton}" Margin="{StaticResource ControlGapRight}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.FullscreenUpcoming}" ToolTip="Upcoming feature" />
+                                <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource UpcomingButton}" Margin="{StaticResource ControlGapRight}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.SnapshotUpcoming}" ToolTip="Upcoming feature" />
                                 <Button Content="Record" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.RecordUpcoming}" ToolTip="Upcoming feature" />
                             </WrapPanel>
                         </StackPanel>
@@ -164,7 +166,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <Ellipse Grid.Column="0" Width="8" Height="8" Margin="0,0,9,0" VerticalAlignment="Center">
+                <Ellipse Grid.Column="0" Width="{StaticResource Space8}" Height="{StaticResource Space8}" Margin="{StaticResource StatusDotGap}" VerticalAlignment="Center">
                     <Ellipse.Style>
                         <Style TargetType="Ellipse">
                             <Setter Property="Fill" Value="{DynamicResource StatusIdleBrush}" />
@@ -178,7 +180,7 @@
                     </Ellipse.Style>
                 </Ellipse>
                 <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusMessage}" />
-                <Border Grid.Column="2" Margin="16,0,0,0" Padding="9,3" CornerRadius="10" Background="{DynamicResource SurfaceSecondaryBrush}">
+                <Border Grid.Column="2" Margin="{StaticResource StatusBadgeGap}" Padding="{StaticResource StatusBadgePadding}" CornerRadius="{StaticResource RadiusSmall}" Background="{DynamicResource SurfaceSecondaryBrush}">
                     <TextBlock Text="{Binding SessionStateDisplay}" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" HorizontalAlignment="Right" />
                 </Border>
             </Grid>
@@ -187,7 +189,7 @@
         </Grid>
 
         <Border Panel.ZIndex="50" Style="{StaticResource DialogOverlay}" Visibility="{Binding IsInformationDialogOpen, Converter={StaticResource BooleanToVisibilityConverter}}" AutomationProperties.Name="Information dialog overlay">
-            <Border Width="520" MaxWidth="520" Margin="24" Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource Card}" AutomationProperties.Name="{Binding InformationDialogTitle}" KeyboardNavigation.TabNavigation="Cycle">
+            <Border Width="{StaticResource DialogWidth}" MaxWidth="{StaticResource DialogWidth}" Margin="{StaticResource DialogMargin}" Padding="{StaticResource DialogPadding}" HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource Card}" AutomationProperties.Name="{Binding InformationDialogTitle}" KeyboardNavigation.TabNavigation="Cycle">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -199,13 +201,13 @@
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                         <StackPanel>
                             <TextBlock Text="{Binding InformationDialogEyebrow}" Style="{StaticResource FieldLabel}" />
-                            <TextBlock Text="{Binding InformationDialogTitle}" FontSize="22" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding InformationDialogTitle}" Style="{StaticResource DialogTitle}" />
                         </StackPanel>
                         <Button Grid.Column="1" Content="Close" Command="{Binding CloseInformationDialogCommand}" Style="{StaticResource QuietButton}" AutomationProperties.Name="Close information dialog" />
                     </Grid>
-                    <TextBlock Grid.Row="1" Text="{Binding InformationDialogDescription}" Margin="0,18,0,0" TextWrapping="Wrap" LineHeight="21" />
-                    <TextBlock Grid.Row="2" Text="{Binding InformationDialogDetails}" Margin="0,14,0,0" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" LineHeight="21" />
-                    <Button x:Name="DialogPrimaryButton" Grid.Row="3" Content="_Got it" Command="{Binding CloseInformationDialogCommand}" Margin="0,22,0,0" HorizontalAlignment="Right" Style="{StaticResource PrimaryButton}" AutomationProperties.Name="Close information dialog" />
+                    <TextBlock Grid.Row="1" Text="{Binding InformationDialogDescription}" Margin="{StaticResource DialogSectionGap}" TextWrapping="Wrap" LineHeight="{StaticResource BodyLineHeight}" />
+                    <TextBlock Grid.Row="2" Text="{Binding InformationDialogDetails}" Margin="{StaticResource DialogSectionGap}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" LineHeight="{StaticResource BodyLineHeight}" />
+                    <Button x:Name="DialogPrimaryButton" Grid.Row="3" Content="_Got it" Command="{Binding CloseInformationDialogCommand}" Margin="{StaticResource DialogActionGap}" HorizontalAlignment="Right" Style="{StaticResource PrimaryButton}" AutomationProperties.Name="Close information dialog" />
                 </Grid>
             </Border>
         </Border>
