@@ -7,7 +7,7 @@
 | 1. Enumeration | Device/capability discovery | Lists real devices and native formats with cancellation/errors | Generic UVC discovery validated; USB HDMI validation remains required |
 | 2A. Preview POC | Primary backend GPU preview | Exact native mode renders through a no-queue GPU path with bounded shutdown and honest processing diagnostics | HD Camera NV12/MJPEG evidence recorded; USB HDMI, disconnect, and broader format validation remain required |
 | 2B. Preview hardening | Hardware breadth and recovery planning | Capture-card compatibility, disconnect behavior, and measured performance are characterized without absorbing later features | Required physical USB HDMI matrix passes before release claims |
-| 3. Premium UI | Production interaction shell | Accessible device/format/status workflow | Keyboard, DPI, contrast review passes |
+| 3. Premium UI | Production interaction shell | Accessible device/format/status workflow; centralized light/dark resources; honest informational panels | Keyboard, responsive layout, contrast, real-preview integration, and safe-failure review recorded; USB HDMI validation remains outstanding |
 | 4. Audio | Local audio monitoring | Stable selected-device audio and explicit permission failures | A/V behavior documented and tested |
 | 5. Media tools | Snapshots and recording | User-requested output is local, cancellable, and validated | Disk-space/error recovery tests pass |
 | 6. Recovery | Compatibility and reconnect | Lost/busy/no-signal states recover or explain failure | Hardware matrix targets pass |

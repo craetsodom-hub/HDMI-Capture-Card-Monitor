@@ -6,6 +6,7 @@ using HdmiCaptureCardMonitor.Capture.Devices;
 using HdmiCaptureCardMonitor.Capture.Preview;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Models;
+using HdmiCaptureCardMonitor.Presentation;
 
 namespace HdmiCaptureCardMonitor;
 
@@ -19,6 +20,7 @@ public partial class App : Application, IDisposable
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        ApplicationThemeManager.ApplyPreferredTheme(Resources);
         var loggerCreation = ApplicationLoggerFactory.CreateDefault();
         logger = loggerCreation.Logger;
         mediaFoundationRuntime = new MediaFoundationRuntime(logger);

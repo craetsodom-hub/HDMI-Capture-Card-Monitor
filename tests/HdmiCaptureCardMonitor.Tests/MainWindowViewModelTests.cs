@@ -21,6 +21,18 @@ public sealed class MainWindowViewModelTests
             new object[] { CaptureSessionState.Faulted, "Error" }
         };
 
+    public static IEnumerable<object[]> LifecycleHints =>
+        new[]
+        {
+            new object[] { CaptureSessionState.Idle, "Select a capture device to continue." },
+            new object[] { CaptureSessionState.Enumerating, "Scanning for available video devices." },
+            new object[] { CaptureSessionState.DeviceReady, "Select a native format to enable preview." },
+            new object[] { CaptureSessionState.Starting, "Preparing the GPU preview." },
+            new object[] { CaptureSessionState.Previewing, "Live preview is active." },
+            new object[] { CaptureSessionState.Stopping, "Releasing the video device safely." },
+            new object[] { CaptureSessionState.Faulted, "Review the message above, correct the issue, and try again." }
+        };
+
     [Theory]
     [MemberData(nameof(CustomerFacingLabels))]
     public void LifecycleDisplayFollowsTheInjectedStateMachine(CaptureSessionState state, string expectedLabel)
@@ -83,17 +95,64 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
-    public void SettingsAndHelpCommandsProvideHonestNonPhaseGuidance()
+    public void DevicePlaceholderDistinguishesScanningSelectionAndNoDeviceStates()
     {
         var viewModel = new MainWindowViewModel(NullApplicationLogger.Instance);
 
+        viewModel.IsDeviceScanRunning = true;
+        Assert.Equal("Scanning for video devices…", viewModel.DevicePlaceholder);
+
+        viewModel.IsDeviceScanRunning = false;
+        viewModel.Devices.Add(new CaptureDevice(
+            "opaque-test-device",
+            "Test Camera",
+            "Test Camera",
+            true,
+            CaptureBackend.MediaFoundation));
+        Assert.Equal("Select a capture device", viewModel.DevicePlaceholder);
+
+        viewModel.Devices.Clear();
+        Assert.Equal("No device available", viewModel.DevicePlaceholder);
+    }
+
+    [Fact]
+    public void SettingsAndHelpCommandsProvideHonestNonPhaseGuidance()
+    {
+        const string lifecycleStatus = "No compatible video capture devices found.";
+        var viewModel = new MainWindowViewModel(NullApplicationLogger.Instance, lifecycleStatus);
+
         viewModel.ShowSettingsInformationCommand.Execute(null);
-        Assert.Equal("Settings are not available yet.", viewModel.StatusMessage);
-        Assert.DoesNotContain("Phase", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(lifecycleStatus, viewModel.StatusMessage);
+        Assert.True(viewModel.IsInformationDialogOpen);
+        Assert.False(viewModel.IsMainContentEnabled);
+        Assert.False(viewModel.ShowSettingsInformationCommand.CanExecute(null));
+        Assert.False(viewModel.ShowHelpInformationCommand.CanExecute(null));
+        Assert.True(viewModel.CloseInformationDialogCommand.CanExecute(null));
+        Assert.False(viewModel.CanRefreshDevices);
+        Assert.Contains("Settings", viewModel.InformationDialogTitle, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Phase", viewModel.InformationDialogDescription, StringComparison.OrdinalIgnoreCase);
+
+        viewModel.CloseInformationDialogCommand.Execute(null);
+        Assert.False(viewModel.IsInformationDialogOpen);
+        Assert.True(viewModel.IsMainContentEnabled);
+        Assert.True(viewModel.ShowSettingsInformationCommand.CanExecute(null));
+        Assert.False(viewModel.CloseInformationDialogCommand.CanExecute(null));
 
         viewModel.ShowHelpInformationCommand.Execute(null);
-        Assert.Equal("Help content is not available yet.", viewModel.StatusMessage);
-        Assert.DoesNotContain("Phase", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(lifecycleStatus, viewModel.StatusMessage);
+        Assert.True(viewModel.IsInformationDialogOpen);
+        Assert.Contains("camera access", viewModel.InformationDialogDetails, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("USB HDMI", viewModel.InformationDialogDetails, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [MemberData(nameof(LifecycleHints))]
+    public void PreviewControlHintFollowsLifecycleState(CaptureSessionState state, string expectedHint)
+    {
+        var viewModel = new MainWindowViewModel(NullApplicationLogger.Instance, stateMachine: MoveTo(state));
+
+        Assert.Equal(expectedHint, viewModel.PreviewControlHint);
+        Assert.DoesNotContain("Phase", viewModel.PreviewControlHint, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void CountLifecycleNotification(
