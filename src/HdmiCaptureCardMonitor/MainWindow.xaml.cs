@@ -1,10 +1,10 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Infrastructure;
-using HdmiCaptureCardMonitor.Models;
 using HdmiCaptureCardMonitor.Presentation;
 using HdmiCaptureCardMonitor.ViewModels;
 
@@ -13,19 +13,29 @@ namespace HdmiCaptureCardMonitor;
 public partial class MainWindow : Window, IDisposable
 {
     private readonly MainWindowViewModel viewModel;
+    private IInputElement? focusBeforeDialog;
     private bool isDisposed;
 
     public MainWindow(IApplicationLogger logger, ICaptureDeviceDiscoveryService discoveryService, ICapturePreviewService previewService, string? startupNotice = null)
     {
         InitializeComponent();
+        ClampInitialSizeToWorkArea();
         viewModel = new MainWindowViewModel(logger, startupNotice, discoveryService: discoveryService, previewService: previewService, previewSurface: PreviewHost);
         DataContext = viewModel;
+        viewModel.PropertyChanging += OnViewModelPropertyChanging;
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
         Loaded += OnLoaded;
         SizeChanged += (_, _) => ApplyResponsiveLayout(ActualWidth);
         StateChanged += (_, _) => PreviewHost.SetWindowMinimized(WindowState == WindowState.Minimized);
         Closing += OnClosing;
         Closed += OnClosed;
+    }
+
+    private void ClampInitialSizeToWorkArea()
+    {
+        var workArea = SystemParameters.WorkArea;
+        Width = Math.Min(Width, Math.Max(MinWidth, workArea.Width));
+        Height = Math.Min(Height, Math.Max(MinHeight, workArea.Height));
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -36,6 +46,15 @@ public partial class MainWindow : Window, IDisposable
         viewModel.StartInitialDiscovery();
     }
 
+    private void OnViewModelPropertyChanging(object? sender, PropertyChangingEventArgs e)
+    {
+        _ = sender;
+        if (e.PropertyName == nameof(MainWindowViewModel.IsInformationDialogOpen) && !viewModel.IsInformationDialogOpen)
+        {
+            focusBeforeDialog = Keyboard.FocusedElement;
+        }
+    }
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         _ = sender;
@@ -44,15 +63,29 @@ public partial class MainWindow : Window, IDisposable
         var dialogOpen = viewModel.IsInformationDialogOpen;
         if (dialogOpen)
         {
-            PreviewHost.SetVideoVisible(false);
-            PreviewHost.SetSurfaceActive(false);
-            Dispatcher.BeginInvoke(DispatcherPriority.Input, DialogPrimaryButton.Focus);
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => DialogPrimaryButton.Focus()));
             return;
         }
 
-        PreviewHost.SetSurfaceActive(viewModel.IsPreviewActive);
-        PreviewHost.SetVideoVisible(viewModel.SessionState == CaptureSessionState.Previewing);
+        var requestedFocus = focusBeforeDialog;
+        focusBeforeDialog = null;
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => RestoreMainContentFocus(requestedFocus)));
     }
+
+    private void RestoreMainContentFocus(IInputElement? requestedFocus)
+    {
+        if (TryFocus(requestedFocus)) return;
+        if (TryFocus(DeviceSelector)) return;
+        if (TryFocus(StartStopButton)) return;
+        _ = TryFocus(SettingsButton);
+    }
+
+    private static bool TryFocus(IInputElement? candidate) => candidate switch
+    {
+        UIElement element when element.IsEnabled && element.IsVisible && element.Focusable => element.Focus(),
+        ContentElement element when element.IsEnabled && element.Focusable => element.Focus(),
+        _ => false
+    };
 
     private void ApplyResponsiveLayout(double windowWidth)
     {
@@ -85,6 +118,7 @@ public partial class MainWindow : Window, IDisposable
     {
         if (isDisposed) return;
         isDisposed = true;
+        viewModel.PropertyChanging -= OnViewModelPropertyChanging;
         viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         viewModel.Dispose();
         GC.SuppressFinalize(this);

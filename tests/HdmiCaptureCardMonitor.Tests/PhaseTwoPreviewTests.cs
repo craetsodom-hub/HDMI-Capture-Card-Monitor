@@ -601,6 +601,106 @@ public sealed class PhaseTwoPreviewTests
     }
 
     [Fact]
+    public async Task HelpPanelHidesPresentedVideoAndClosingRestoresItWithoutChangingStatus()
+    {
+        var (viewModel, preview, surface) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        preview.RaiseDiagnostics(29.8, 1.2, 2.4);
+        var lifecycleStatus = viewModel.StatusMessage;
+
+        viewModel.ShowHelpInformationCommand.Execute(null);
+
+        Assert.True(viewModel.IsInformationDialogOpen);
+        Assert.False(viewModel.IsMainContentEnabled);
+        Assert.False(surface.IsSurfaceActive);
+        Assert.False(surface.IsVideoVisible);
+        Assert.False(viewModel.TogglePreviewCommand.CanExecute(null));
+        Assert.Equal(lifecycleStatus, viewModel.StatusMessage);
+
+        viewModel.CloseInformationDialogCommand.Execute(null);
+
+        Assert.False(viewModel.IsInformationDialogOpen);
+        Assert.True(surface.IsSurfaceActive);
+        Assert.True(surface.IsVideoVisible);
+        Assert.Equal(lifecycleStatus, viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task FirstFrameDuringSettingsPanelStaysHiddenUntilThePanelCloses()
+    {
+        var (viewModel, preview, surface) = Create();
+        await MakeReadyAsync(viewModel);
+        var start = viewModel.StartPreviewForTestingAsync();
+        Assert.Equal(CaptureSessionState.Starting, viewModel.SessionState);
+
+        viewModel.ShowSettingsInformationCommand.Execute(null);
+        preview.CompleteStart();
+        await start;
+        preview.RaiseFirstFrame();
+
+        Assert.Equal(CaptureSessionState.Previewing, viewModel.SessionState);
+        Assert.False(surface.IsSurfaceActive);
+        Assert.False(surface.IsVideoVisible);
+
+        viewModel.CloseInformationDialogCommand.Execute(null);
+
+        Assert.True(surface.IsSurfaceActive);
+        Assert.True(surface.IsVideoVisible);
+    }
+
+    [Fact]
+    public async Task FailureDuringHelpPanelCannotRevealVideoWhenThePanelCloses()
+    {
+        var (viewModel, preview, surface) = Create(immediateStop: true);
+        await StartAndPresentAsync(viewModel, preview);
+        viewModel.ShowHelpInformationCommand.Execute(null);
+
+        preview.RaiseFailure(PreviewFailureCategory.PreviewStalled);
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.Equal("Video input stalled", viewModel.PreviewTitle);
+        Assert.False(surface.IsVideoVisible);
+
+        viewModel.CloseInformationDialogCommand.Execute(null);
+
+        Assert.False(surface.IsSurfaceActive);
+        Assert.False(surface.IsVideoVisible);
+    }
+
+    [Fact]
+    public async Task StopCompletingDuringSettingsPanelKeepsStoppedMessageAndSurfaceHidden()
+    {
+        var (viewModel, preview, surface) = Create();
+        await StartAndPresentAsync(viewModel, preview);
+        viewModel.ShowSettingsInformationCommand.Execute(null);
+
+        var stop = viewModel.StopPreviewForTestingAsync();
+        preview.CompleteStop();
+        await stop;
+        viewModel.CloseInformationDialogCommand.Execute(null);
+
+        Assert.Equal(CaptureSessionState.DeviceReady, viewModel.SessionState);
+        Assert.Equal("Preview stopped", viewModel.PreviewTitle);
+        Assert.Equal("Select Start to resume preview.", viewModel.PreviewControlHint);
+        Assert.True(viewModel.IsPreviewMessageVisible);
+        Assert.False(surface.IsSurfaceActive);
+        Assert.False(surface.IsVideoVisible);
+    }
+
+    [Fact]
+    public async Task DisposingWithInformationPanelOpenPermanentlyHidesThePreviewSurface()
+    {
+        var (viewModel, preview, surface) = Create(immediateStop: true);
+        await StartAndPresentAsync(viewModel, preview);
+        viewModel.ShowSettingsInformationCommand.Execute(null);
+
+        viewModel.Dispose();
+        viewModel.CloseInformationDialogCommand.Execute(null);
+
+        Assert.False(surface.IsSurfaceActive);
+        Assert.False(surface.IsVideoVisible);
+    }
+
+    [Fact]
     public async Task WindowClosingStopsPreviewBeforeSurfaceCanBeDestroyed()
     {
         var (viewModel, preview, surface) = Create(immediateStop: true);

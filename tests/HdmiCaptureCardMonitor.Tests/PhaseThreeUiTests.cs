@@ -126,12 +126,31 @@ public sealed class PhaseThreeUiTests
         Assert.DoesNotContain("Phase", JoinDialog(viewModel), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("no placeholder switches", viewModel.InformationDialogDescription, StringComparison.OrdinalIgnoreCase);
 
+        viewModel.CloseInformationDialogCommand.Execute(null);
         viewModel.ShowHelpInformationCommand.Execute(null);
         Assert.DoesNotContain("Phase", JoinDialog(viewModel), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("physical USB HDMI", viewModel.InformationDialogDetails, StringComparison.OrdinalIgnoreCase);
 
         viewModel.CloseInformationDialogCommand.Execute(null);
         Assert.False(viewModel.IsInformationDialogOpen);
+    }
+
+    [Fact]
+    public void WindowMarkupDeclaresModalMainContentAndVisibleUpcomingGrouping()
+    {
+        var root = FindRepositoryRoot();
+        var window = XDocument.Load(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "MainWindow.xaml"));
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var mainContent = window.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute(x + "Name"), "MainContent", StringComparison.Ordinal));
+
+        Assert.Equal("{Binding IsMainContentEnabled}", (string?)mainContent.Attribute("IsEnabled"));
+        Assert.Contains(window.Descendants(), element =>
+            element.Name.LocalName == "TextBlock" &&
+            string.Equals((string?)element.Attribute("Text"), "UPCOMING", StringComparison.Ordinal));
+        Assert.Contains(window.Descendants(), element =>
+            element.Name.LocalName == "Border" &&
+            string.Equals((string?)element.Attribute("KeyboardNavigation.TabNavigation"), "Cycle", StringComparison.Ordinal));
     }
 
     private static XDocument LoadTheme(string path)

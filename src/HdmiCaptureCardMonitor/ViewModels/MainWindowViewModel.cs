@@ -52,21 +52,24 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public CaptureSessionState SessionState => stateMachine.CurrentState;
     public string SessionStateDisplay => GetSessionStateDisplay(SessionState);
     public bool IsPreviewActive => SessionState is CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping;
-    public bool CanChangeCaptureSelection => !IsPreviewActive && !IsDeviceScanRunning && !IsFormatScanRunning;
+    public bool IsMainContentEnabled => !IsInformationDialogOpen;
+    public bool CanOpenInformationDialog => !IsInformationDialogOpen;
+    public bool CanChangeCaptureSelection => !IsInformationDialogOpen && !IsPreviewActive && !IsDeviceScanRunning && !IsFormatScanRunning;
     public bool HasDevices => Devices.Count > 0 && CanChangeCaptureSelection;
     public bool HasFormats => Formats.Count > 0 && CanChangeCaptureSelection;
-    public bool CanRefreshDevices => !IsDeviceScanRunning && !IsPreviewActive;
+    public bool CanRefreshDevices => !IsInformationDialogOpen && !IsDeviceScanRunning && !IsPreviewActive;
     public string DevicePlaceholder => IsDeviceScanRunning ? "No device available" : Devices.Count > 0 ? "Select a capture device" : "No device available";
     public string FormatPlaceholder => SelectedDevice is null ? "Select a device first" : IsFormatScanRunning ? "Reading supported formats…" : Formats.Count > 0 ? "Select a native format" : "No native formats available";
     public bool CanStartCapture =>
         SessionState == CaptureSessionState.DeviceReady &&
         SelectedDevice is not null &&
         SelectedFormat is not null &&
+        !IsInformationDialogOpen &&
         !IsDeviceScanRunning &&
         !IsFormatScanRunning &&
         previewSurface?.IsPresentable == true &&
         !previewService.IsActive;
-    public bool CanStartStopPreview => CanStartCapture || SessionState == CaptureSessionState.Previewing;
+    public bool CanStartStopPreview => !IsInformationDialogOpen && (CanStartCapture || SessionState == CaptureSessionState.Previewing);
     public string StartStopText => SessionState switch
     {
         CaptureSessionState.Starting => "Starting…",
@@ -84,6 +87,22 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public bool CanFullscreen => laterFeaturesAvailable;
     public bool CanTakeSnapshot => laterFeaturesAvailable;
     public bool CanRecord => laterFeaturesAvailable;
+    public string PreviewControlHint => SessionState switch
+    {
+        CaptureSessionState.Starting => "Preparing the GPU preview.",
+        CaptureSessionState.Previewing => "Live preview is active.",
+        CaptureSessionState.Stopping => "Releasing the video device safely.",
+        CaptureSessionState.Faulted => "Review the message above, correct the issue, and try again.",
+        CaptureSessionState.Enumerating when SelectedDevice is not null => "Reading the device’s native video formats.",
+        CaptureSessionState.Enumerating => "Scanning for available video devices.",
+        CaptureSessionState.DeviceReady when SelectedFormat is null => "Select a native format to enable preview.",
+        CaptureSessionState.DeviceReady when PreviewTitle == "Preview stopped" => "Select Start to resume preview.",
+        CaptureSessionState.DeviceReady => "Ready to open the selected video input.",
+        _ when SelectedDevice is null => "Select a capture device to continue.",
+        _ when IsFormatScanRunning => "Reading the device’s native video formats.",
+        _ when SelectedFormat is null => "Select a native format to enable preview.",
+        _ => "Ready to open the selected video input."
+    };
     internal Task FormatDiscoveryCompletion => formatDiscoveryCompletion;
 
     public MainWindowViewModel(
@@ -210,6 +229,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnIsDeviceScanRunningChanged(bool value) { _ = value; NotifyCaptureProperties(); }
     partial void OnIsFormatScanRunningChanged(bool value) { _ = value; NotifyCaptureProperties(); }
+    partial void OnPreviewTitleChanged(string value)
+    {
+        _ = value;
+        OnPropertyChanged(nameof(PreviewControlHint));
+    }
+
+    partial void OnIsInformationDialogOpenChanged(bool value)
+    {
+        _ = value;
+        NotifyCaptureProperties();
+        ShowSettingsInformationCommand.NotifyCanExecuteChanged();
+        ShowHelpInformationCommand.NotifyCanExecuteChanged();
+        CloseInformationDialogCommand.NotifyCanExecuteChanged();
+        UpdatePreviewSurfacePresentation();
+    }
 
     private async Task LoadFormatsAsync(CaptureDevice? device)
     {
@@ -302,8 +336,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         activePreviewSessionId = Guid.Empty;
         CurrentPreviewDiagnostics = null;
         IsPreviewMessageVisible = true;
-        previewSurface.SetVideoVisible(false);
-        previewSurface.SetSurfaceActive(true);
         TryTransition(CaptureSessionState.Starting);
         StatusMessage = "Starting live preview…";
         PreviewGlyph = "\uE768";
@@ -329,8 +361,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (!IsCurrentPreviewOperation(generation) || disposed) return;
         if (result.IsCancelled)
         {
-            previewSurface.SetVideoVisible(false);
-            previewSurface.SetSurfaceActive(false);
             IsPreviewMessageVisible = true;
             TryTransition(CaptureSessionState.DeviceReady);
             StatusMessage = "Preview start was cancelled.";
@@ -343,8 +373,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             RetirePreviewSession(result.SessionId);
             activePreviewSessionId = Guid.Empty;
-            previewSurface.SetVideoVisible(false);
-            previewSurface.SetSurfaceActive(false);
             ApplyPreviewFailureMessage(result.Failure!);
             TryTransition(CaptureSessionState.Faulted);
             if (result.Failure?.Category != PreviewFailureCategory.ShutdownTimeout)
@@ -390,8 +418,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         if (!IsCurrentPreviewOperation(generation) || disposed) return;
-        previewSurface?.SetVideoVisible(false);
-        previewSurface?.SetSurfaceActive(false);
         IsPreviewMessageVisible = true;
         RetirePreviewSession(activePreviewSessionId);
         activePreviewSessionId = Guid.Empty;
@@ -409,10 +435,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         PreviewDescription = "Select Start to resume the selected video input.";
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanOpenInformationDialog))]
     private void ShowSettingsInformation()
     {
-        StatusMessage = "Settings are not available yet.";
         InformationDialogEyebrow = "SETTINGS";
         InformationDialogTitle = "Settings are coming later";
         InformationDialogDescription = "This release keeps capture behavior explicit and predictable, so there are no placeholder switches or controls that pretend to change the application.";
@@ -420,10 +445,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsInformationDialogOpen = true;
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanOpenInformationDialog))]
     private void ShowHelpInformation()
     {
-        StatusMessage = "Help content is available in the open information panel.";
         InformationDialogEyebrow = "HELP";
         InformationDialogTitle = "Start a live monitor preview";
         InformationDialogDescription = "Connect a compatible video capture device, select Refresh, choose the device and one of its native formats, then select Start. Select Stop before unplugging the device when possible.";
@@ -431,13 +455,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsInformationDialogOpen = true;
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(IsInformationDialogOpen))]
     private void CloseInformationDialog() => IsInformationDialogOpen = false;
 
     public void Dispose()
     {
         if (disposed) return;
         disposed = true;
+        UpdatePreviewSurfacePresentation();
         Interlocked.Increment(ref deviceScanGeneration);
         Interlocked.Increment(ref formatScanGeneration);
         Interlocked.Increment(ref previewGeneration);
@@ -449,7 +474,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             previewSurface.AvailabilityChanged -= OnSurfaceAvailabilityChanged;
             previewSurface.PresentabilityChanged -= OnSurfaceAvailabilityChanged;
-            previewSurface.SetVideoVisible(false);
         }
         CancelFormats();
         var deviceCancellation = Interlocked.Exchange(ref deviceScanCancellation, null);
@@ -460,7 +484,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         activeCancellation?.Dispose();
         try { _ = previewService.StopAsync().GetAwaiter().GetResult(); }
         catch (Exception exception) { SafeLogError("Preview shutdown failed safely during window disposal.", exception); }
-        previewSurface?.SetSurfaceActive(false);
         stateMachine.StateChanged -= OnStateChanged;
     }
 
@@ -470,7 +493,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (IsRetiredPreviewSession(e.SessionId)) return;
         if (activePreviewSessionId != Guid.Empty && activePreviewSessionId != e.SessionId) return;
         activePreviewSessionId = e.SessionId;
-        previewSurface?.SetVideoVisible(true);
         IsPreviewMessageVisible = false;
         TryTransition(CaptureSessionState.Previewing);
         StatusMessage = "Previewing live video.";
@@ -494,7 +516,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (activePreviewSessionId == Guid.Empty || activePreviewSessionId != e.SessionId) return;
         var generation = Interlocked.Increment(ref previewGeneration);
         activePreviewSessionId = e.SessionId;
-        previewSurface?.SetVideoVisible(false);
         IsPreviewMessageVisible = true;
         ApplyPreviewFailureMessage(e.Failure);
         TryTransition(CaptureSessionState.Faulted);
@@ -516,8 +537,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (disposed || generation != Volatile.Read(ref previewGeneration) || activePreviewSessionId != failedSessionId) return;
             RetirePreviewSession(failedSessionId);
             activePreviewSessionId = Guid.Empty;
-            previewSurface?.SetVideoVisible(false);
-            previewSurface?.SetSurfaceActive(false);
             IsPreviewMessageVisible = true;
             NotifyCaptureProperties();
             if (result.IsSuccess)
@@ -542,7 +561,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         _ = sender;
         _ = e;
-        PostToUi(NotifyCaptureProperties);
+        PostToUi(() =>
+        {
+            NotifyCaptureProperties();
+            UpdatePreviewSurfacePresentation();
+        });
     }
 
     private void PostToUi(Action action)
@@ -588,6 +611,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void NotifyCaptureProperties()
     {
         OnPropertyChanged(nameof(IsPreviewActive));
+        OnPropertyChanged(nameof(IsMainContentEnabled));
+        OnPropertyChanged(nameof(CanOpenInformationDialog));
         OnPropertyChanged(nameof(CanChangeCaptureSelection));
         OnPropertyChanged(nameof(HasDevices));
         OnPropertyChanged(nameof(HasFormats));
@@ -598,6 +623,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CanStartStopPreview));
         OnPropertyChanged(nameof(StartStopText));
         OnPropertyChanged(nameof(StartStopAccessText));
+        OnPropertyChanged(nameof(PreviewControlHint));
         RefreshDevicesCommand.NotifyCanExecuteChanged();
         TogglePreviewCommand.NotifyCanExecuteChanged();
     }
@@ -700,6 +726,23 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SessionState));
         OnPropertyChanged(nameof(SessionStateDisplay));
         NotifyCaptureProperties();
+        UpdatePreviewSurfacePresentation();
+    }
+
+    private void UpdatePreviewSurfacePresentation()
+    {
+        if (previewSurface is null) return;
+
+        var surfaceActive = !disposed && IsPreviewActive && !IsInformationDialogOpen;
+        previewSurface.SetSurfaceActive(surfaceActive);
+
+        var videoVisible =
+            !disposed &&
+            !IsInformationDialogOpen &&
+            SessionState == CaptureSessionState.Previewing &&
+            previewSurface.IsAvailable &&
+            previewSurface.IsPresentable;
+        previewSurface.SetVideoVisible(videoVisible);
     }
 
     private static string GetSessionStateDisplay(CaptureSessionState state) => state switch

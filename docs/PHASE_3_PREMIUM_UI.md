@@ -10,7 +10,7 @@ The interface contains:
 - a state-aware preview surface with plain-language icon, title, and recovery guidance;
 - device and native-format selectors with readable empty states, truncation, and full-value tooltips;
 - a clear primary Start/Stop action;
-- deliberately disabled Fullscreen, Snapshot, and Record controls labelled as upcoming to accessibility clients;
+- deliberately disabled Fullscreen, Snapshot, and Record controls grouped beneath a visible `UPCOMING` label and labelled as upcoming to accessibility clients;
 - a live status region with lifecycle and measured received/rendered FPS when diagnostics are available;
 - in-window Settings and Help information panels with no fake toggles or stored preferences.
 
@@ -26,11 +26,11 @@ Primary and muted text palettes are automatically checked against their surfaces
 
 At widths below 900 device-independent pixels, device and format selectors stack and action buttons move below their explanatory text. The supported minimum window is 720 by 620 DIPs. The preview keeps a 220-DIP minimum height. Long device names, format labels, and status text trim without pushing controls outside their grids, and the complete values remain available through tooltips.
 
-Tab navigation follows header actions, selectors, Refresh, capture actions, and information-panel actions. Alt access keys are available for Settings, Help, Device, Format, Refresh, Start/Stop, and the dialog acknowledgement. Important controls have stable Automation names, and preview/status changes are polite live regions. Dialog focus moves to the primary close action; Escape closes the panel.
+Tab navigation follows header actions, selectors, Refresh, capture actions, and information-panel actions. Alt access keys are available for Settings, Help, Device, Format, Refresh, Start/Stop, and the dialog acknowledgement. Important controls have stable Automation names, and preview/status changes are polite live regions. An information panel disables the named main-content container and gates every underlying command, its two actions form a contained Tab cycle, and Escape closes it. Focus is captured before the main content is disabled and restored to the original control when it remains safe, with a selector/Start fallback otherwise.
 
 ## HWND airspace and lifetime safety
 
-The Phase 2A `HwndPreviewSurface` remains a single stable child HWND and is never replaced by a WPF bitmap path. WPF placeholder content collapses once the first frame is presented, so it cannot cover live video. When Settings or Help is opened, the native child is temporarily hidden before the WPF panel receives focus; it is restored only if the authoritative lifecycle still reports `Previewing`. The capture session continues and the existing synchronous bounded shutdown path remains responsible for device and GPU cleanup.
+The Phase 2A `HwndPreviewSurface` remains a single stable child HWND and is never replaced by a WPF bitmap path. WPF placeholder content collapses once the first frame is presented, so it cannot cover live video. One view-model presentation method is the production authority for native visibility: the child may be shown only while the lifecycle is `Previewing`, the information panel is closed, the surface is available and presentable, and the view model is not disposed. First-frame, failure, Stop, availability, panel, and disposal paths update that policy instead of exposing the child directly. The capture session continues behind a panel and the existing synchronous bounded shutdown path remains responsible for device and GPU cleanup.
 
 ## State coverage
 
@@ -55,3 +55,15 @@ A webcam validates generic UVC behavior only. Physical USB HDMI capture-card com
 - Windows Camera acquired HD Camera after Stop and again after HDMI Capture Card Monitor closed, confirming device release in both paths.
 - The active Windows dark-app preference was reviewed manually. Both light and dark resource dictionaries and their contrast thresholds were validated automatically; a manual light-theme and high-contrast review remains outstanding.
 - Screenshots were retained outside the repository. No personal screenshot or captured media is committed.
+
+## Final correction validation — 2026-07-15
+
+- 257 ordinary hardware-independent tests passed, including deterministic first-frame, failure, Stop, panel-close, disposal, status-preservation, modal-command, and dynamic-hint combinations.
+- Release x64 restore and build completed with zero warnings and zero errors.
+- Opening Settings or Help left the lifecycle `StatusMessage` unchanged in Idle, Starting, Previewing/FPS, and stopped checks; lifecycle transitions remained free to update it normally.
+- Keyboard-only Settings and Help workflows confirmed initial dialog focus, a forward/reverse contained Tab cycle, Escape close, access-key blocking behind the overlay, and restoration to the originating header action.
+- HD Camera preview confirmed the native child hides for Settings/Help during Starting and Previewing, stays hidden when the first frame arrives behind Settings, returns after panel close, and remains hidden after Stop completes behind Settings. Closing the application with a panel open completed safely.
+- Dark and light application themes were reviewed manually. Display scaling was changed through Windows Settings and reviewed at 100%, 125%, 150%, and 200%; the user's original dark/150% configuration was restored afterward.
+- The 720-DIP minimum width, maximized layout, narrow Settings/Help panels, and the high-DPI startup clamp were reviewed without clipped text, overlap, lost selectors/status, out-of-window dialogs, or native HWND airspace over WPF content.
+- High-contrast support was not validated and remains explicitly deferred. Physical USB HDMI capture-card validation remains mandatory before Microsoft Store release.
+- Updated screenshots are retained outside the repository; screenshots, logs, and camera media are not committed.

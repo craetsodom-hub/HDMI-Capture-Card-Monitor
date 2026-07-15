@@ -18,12 +18,13 @@
     </Window.InputBindings>
 
     <Grid Margin="{StaticResource PagePadding}">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" MinHeight="220" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+        <Grid x:Name="MainContent" IsEnabled="{Binding IsMainContentEnabled}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" MinHeight="220" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
         <Grid Grid.Row="0" Margin="0,0,0,18">
             <Grid.ColumnDefinitions>
@@ -44,8 +45,8 @@
                 <TextBlock Text="A focused monitor for USB video capture" Style="{StaticResource SubtitleText}" />
             </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button Content="Se_ttings" Command="{Binding ShowSettingsInformationCommand}" Style="{StaticResource QuietButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Settings}" ToolTip="Open settings information" />
-                <Button Content="_Help" Command="{Binding ShowHelpInformationCommand}" Style="{StaticResource QuietButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Help}" ToolTip="Open help" />
+                <Button x:Name="SettingsButton" Content="Se_ttings" Command="{Binding ShowSettingsInformationCommand}" Style="{StaticResource QuietButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Settings}" ToolTip="Open settings information" />
+                <Button x:Name="HelpButton" Content="_Help" Command="{Binding ShowHelpInformationCommand}" Style="{StaticResource QuietButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Help}" ToolTip="Open help" />
             </StackPanel>
         </Grid>
 
@@ -139,14 +140,19 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel x:Name="ActionDescription" VerticalAlignment="Center">
                         <TextBlock Text="Preview controls" Style="{StaticResource CardTitle}" />
-                        <TextBlock Text="Choose a device and native format to begin." Style="{StaticResource SubtitleText}" />
+                        <TextBlock Text="{Binding PreviewControlHint}" Style="{StaticResource SubtitleText}" TextWrapping="Wrap" />
                     </StackPanel>
-                    <WrapPanel x:Name="ActionButtons" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <Button Content="{Binding StartStopAccessText}" Command="{Binding TogglePreviewCommand}" Style="{StaticResource PrimaryButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.StartStopPreview}" />
-                        <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.FullscreenUpcoming}" ToolTip="Upcoming feature" />
-                        <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.SnapshotUpcoming}" ToolTip="Upcoming feature" />
-                        <Button Content="Record" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.RecordUpcoming}" ToolTip="Upcoming feature" />
-                    </WrapPanel>
+                    <StackPanel x:Name="ActionButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Button x:Name="StartStopButton" Content="{Binding StartStopAccessText}" Command="{Binding TogglePreviewCommand}" Style="{StaticResource PrimaryButton}" VerticalAlignment="Bottom" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.StartStopPreview}" />
+                        <StackPanel>
+                            <TextBlock Text="UPCOMING" Style="{StaticResource FieldLabel}" Margin="0,0,0,4" HorizontalAlignment="Left" />
+                            <WrapPanel>
+                                <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.FullscreenUpcoming}" ToolTip="Upcoming feature" />
+                                <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.SnapshotUpcoming}" ToolTip="Upcoming feature" />
+                                <Button Content="Record" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.RecordUpcoming}" ToolTip="Upcoming feature" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </StackPanel>
                 </Grid>
             </Grid>
         </Border>
@@ -178,7 +184,9 @@
             </Grid>
         </Border>
 
-        <Border Grid.RowSpan="4" Panel.ZIndex="50" Style="{StaticResource DialogOverlay}" Visibility="{Binding IsInformationDialogOpen, Converter={StaticResource BooleanToVisibilityConverter}}" AutomationProperties.Name="Information dialog overlay">
+        </Grid>
+
+        <Border Panel.ZIndex="50" Style="{StaticResource DialogOverlay}" Visibility="{Binding IsInformationDialogOpen, Converter={StaticResource BooleanToVisibilityConverter}}" AutomationProperties.Name="Information dialog overlay">
             <Border Width="520" MaxWidth="520" Margin="24" Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource Card}" AutomationProperties.Name="{Binding InformationDialogTitle}" KeyboardNavigation.TabNavigation="Cycle">
                 <Grid>
                     <Grid.RowDefinitions>
