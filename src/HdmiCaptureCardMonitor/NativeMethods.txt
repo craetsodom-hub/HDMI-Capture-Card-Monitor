@@ -58,6 +58,8 @@ MonitorFromWindow
 GetMonitorInfo
 GetWindowLongPtr
 SetWindowLongPtr
+SetLastError
+WIN32_ERROR
 GetDpiForWindow
 SetCursor
 LoadCursor

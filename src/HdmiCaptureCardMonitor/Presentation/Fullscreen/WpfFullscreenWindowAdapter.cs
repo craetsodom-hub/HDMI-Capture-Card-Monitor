@@ -70,7 +70,15 @@ internal sealed class WpfFullscreenWindowAdapter(
         if (nativeApi.TryGetNearestMonitor(Handle, out var monitor, out var failure))
             result = nativeApi.ApplySafeWindowedFallback(Handle, snapshot, monitor);
         else
-            result = FullscreenTransitionResult.Failed(failure ?? FullscreenFailure.Unexpected(new InvalidOperationException("No monitor is available.")));
+            result = FullscreenTransitionResult.Failed(failure is null
+                ? FullscreenFailure.Unexpected(
+                    FullscreenOperation.SafeFallback,
+                    new InvalidOperationException("No monitor is available."))
+                : FullscreenFailure.Create(
+                    FullscreenOperation.SafeFallback,
+                    failure.TechnicalMessage,
+                    failure.NativeError,
+                    failure.Exception));
         reapplyTitleBarTheme();
         return ValueTask.FromResult(result);
     }

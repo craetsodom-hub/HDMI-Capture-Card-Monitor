@@ -4,8 +4,8 @@ namespace HdmiCaptureCardMonitor.Tests;
 
 public sealed class FullscreenPresentationTests
 {
-    private static readonly FullscreenFailure EntryFailure = new(
-        "Fullscreen could not be opened. Live preview is still running.",
+    private static readonly FullscreenFailure EntryFailure = FullscreenFailure.Create(
+        FullscreenOperation.Entry,
         "Synthetic entry failure.");
 
     [Fact]
@@ -111,6 +111,9 @@ public sealed class FullscreenPresentationTests
         Assert.False(result.IsSuccess);
         Assert.Equal(FullscreenTransitionDisposition.RolledBack, result.Disposition);
         Assert.Same(EntryFailure, result.Failure);
+        Assert.Equal(
+            "Fullscreen could not be opened. Live preview is still running.",
+            result.Failure!.CustomerMessage);
         Assert.False(controller.IsFullscreen);
         Assert.Equal(1, adapter.RestoreCalls);
         Assert.Equal(0, adapter.FallbackCalls);
@@ -119,7 +122,9 @@ public sealed class FullscreenPresentationTests
     [Fact]
     public async Task FailedExactRestoreUsesSafeVisibleFallback()
     {
-        var restoreFailure = new FullscreenFailure("Window was restored safely.", "Synthetic exact-restore failure.");
+        var restoreFailure = FullscreenFailure.Create(
+            FullscreenOperation.ExactRestore,
+            "Synthetic exact-restore failure.");
         var adapter = new FakeWindowAdapter
         {
             RestoreResult = FullscreenTransitionResult.Failed(restoreFailure)
@@ -136,6 +141,33 @@ public sealed class FullscreenPresentationTests
         Assert.Equal(1, adapter.RestoreCalls);
         Assert.Equal(1, adapter.FallbackCalls);
         Assert.Equal(FullscreenExitReason.DisplayRemoved, adapter.FallbackReasons.Single());
+        Assert.Equal(
+            "The previous window position could not be restored exactly. Live preview is still running in a safe window.",
+            result.Failure!.CustomerMessage);
+    }
+
+    [Fact]
+    public async Task FailedExactRestoreAndFallbackUseExitFailureWording()
+    {
+        var adapter = new FakeWindowAdapter
+        {
+            RestoreResult = FullscreenTransitionResult.Failed(FullscreenFailure.Create(
+                FullscreenOperation.ExactRestore,
+                "Synthetic exact-restore failure.")),
+            FallbackResult = FullscreenTransitionResult.Failed(FullscreenFailure.Create(
+                FullscreenOperation.SafeFallback,
+                "Synthetic fallback failure."))
+        };
+        var controller = new FullscreenWindowController(adapter);
+        await controller.EnterAsync();
+
+        var result = await controller.ExitAsync(FullscreenExitReason.User);
+
+        Assert.False(result.IsSuccess);
+        Assert.True(result.UsedSafeFallback);
+        Assert.Equal(
+            "Fullscreen could not be closed normally. Live preview is still running.",
+            result.Failure!.CustomerMessage);
     }
 
     [Fact]
@@ -189,7 +221,9 @@ public sealed class FullscreenPresentationTests
         Assert.Equal(1, adapter.RestoreCalls);
         Assert.Equal(FullscreenExitReason.Disposal, adapter.RestoreReasons.Single());
         Assert.False(result.IsSuccess);
-        Assert.Contains("closing", result.Failure!.CustomerMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "Fullscreen could not be closed normally. Live preview is still running.",
+            result.Failure!.CustomerMessage);
     }
 
     [Fact]

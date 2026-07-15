@@ -73,17 +73,28 @@ public sealed class FullscreenWindowController : IFullscreenWindowController
         return task;
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         lock (syncRoot)
         {
-            if (disposing || disposed) return;
+            if (disposing || disposed) return ValueTask.CompletedTask;
             disposing = true;
+            if (!desiredFullscreen && !isFullscreen && !isTransitioning && workerCompletion is null)
+            {
+                disposed = true;
+                GC.SuppressFinalize(this);
+                return ValueTask.CompletedTask;
+            }
         }
 
+        GC.SuppressFinalize(this);
+        return new ValueTask(DisposeCoreAsync());
+    }
+
+    private async Task DisposeCoreAsync()
+    {
         _ = await ExitAsync(FullscreenExitReason.Disposal);
         lock (syncRoot) disposed = true;
-        GC.SuppressFinalize(this);
     }
 
     private Task<FullscreenTransitionResult> EnsureWorkerLocked(
@@ -159,7 +170,7 @@ public sealed class FullscreenWindowController : IFullscreenWindowController
         }
         catch (Exception exception)
         {
-            var failure = FullscreenFailure.Unexpected(exception);
+            var failure = FullscreenFailure.Unexpected(CurrentFailureOperation(), exception);
             finalResult = await TryFallbackAfterUnexpectedFailureAsync(failure);
             FullscreenControllerStateChangedEventArgs failureNotification;
             lock (syncRoot)
@@ -181,7 +192,9 @@ public sealed class FullscreenWindowController : IFullscreenWindowController
     {
         var captured = await adapter.CaptureSnapshotAsync(operationGeneration);
         if (!captured.IsSuccess)
-            return FullscreenTransitionResult.Failed(captured.Failure ?? UnknownFailure("Window placement capture failed."));
+            return FullscreenTransitionResult.Failed(captured.Failure ?? UnknownFailure(
+                FullscreenOperation.SnapshotCapture,
+                "Window placement capture failed."));
 
         var localSnapshot = captured.Snapshot!;
         lock (syncRoot) snapshot = localSnapshot;
@@ -255,7 +268,9 @@ public sealed class FullscreenWindowController : IFullscreenWindowController
         }
         catch (Exception exception)
         {
-            restore = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(exception));
+            restore = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(
+                reason == FullscreenExitReason.Disposal ? FullscreenOperation.Disposal : FullscreenOperation.ExactRestore,
+                exception));
         }
 
         if (restore.IsSuccess) return restore;
@@ -264,12 +279,18 @@ public sealed class FullscreenWindowController : IFullscreenWindowController
         {
             var fallback = await adapter.ApplySafeWindowedFallbackAsync(localSnapshot, reason, operationGeneration);
             return fallback.IsSuccess
-                ? FullscreenTransitionResult.Fallback(restore.Failure ?? UnknownFailure("Exact window restoration failed."))
-                : FullscreenTransitionResult.Fallback(fallback.Failure ?? restore.Failure ?? UnknownFailure("Window fallback failed."));
+                ? FullscreenTransitionResult.Fallback(restore.Failure ?? UnknownFailure(
+                    FullscreenOperation.ExactRestore,
+                    "Exact window restoration failed."))
+                : FullscreenTransitionResult.Fallback(fallback.Failure ?? UnknownFailure(
+                    FullscreenOperation.SafeFallback,
+                    "Window fallback failed."));
         }
         catch (Exception exception)
         {
-            return FullscreenTransitionResult.Fallback(FullscreenFailure.Unexpected(exception));
+            return FullscreenTransitionResult.Fallback(FullscreenFailure.Unexpected(
+                reason == FullscreenExitReason.Disposal ? FullscreenOperation.Disposal : FullscreenOperation.SafeFallback,
+                exception));
         }
     }
 
@@ -291,11 +312,15 @@ public sealed class FullscreenWindowController : IFullscreenWindowController
                 currentGeneration);
             return fallback.IsSuccess
                 ? FullscreenTransitionResult.Fallback(failure)
-                : FullscreenTransitionResult.Fallback(fallback.Failure ?? failure);
+                : FullscreenTransitionResult.Fallback(fallback.Failure ?? UnknownFailure(
+                    FullscreenOperation.SafeFallback,
+                    "Window fallback failed after an unexpected fullscreen error."));
         }
-        catch
+        catch (Exception exception)
         {
-            return FullscreenTransitionResult.Fallback(failure);
+            return FullscreenTransitionResult.Fallback(FullscreenFailure.Unexpected(
+                FullscreenOperation.SafeFallback,
+                exception));
         }
     }
 
@@ -323,12 +348,21 @@ public sealed class FullscreenWindowController : IFullscreenWindowController
         }
     }
 
+    private FullscreenOperation CurrentFailureOperation()
+    {
+        lock (syncRoot)
+        {
+            if (disposing) return FullscreenOperation.Disposal;
+            return desiredFullscreen ? FullscreenOperation.Entry : FullscreenOperation.ExactRestore;
+        }
+    }
+
     private static FullscreenTransitionResult DisposedFailure() => FullscreenTransitionResult.Failed(
-        new FullscreenFailure(
-            "Fullscreen is unavailable because the window is closing.",
+        FullscreenFailure.Create(
+            FullscreenOperation.Disposal,
             "A fullscreen entry was requested after controller disposal."));
 
-    private static FullscreenFailure UnknownFailure(string technicalMessage) => new(
-        "Fullscreen could not be opened. Live preview is still running.",
-        technicalMessage);
+    private static FullscreenFailure UnknownFailure(
+        FullscreenOperation operation,
+        string technicalMessage) => FullscreenFailure.Create(operation, technicalMessage);
 }

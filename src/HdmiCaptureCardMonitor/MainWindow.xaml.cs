@@ -22,9 +22,8 @@ public partial class MainWindow : Window, IDisposable
     private readonly MainWindowViewModel viewModel;
     private readonly FullscreenWindowController fullscreenController;
     private readonly FullscreenCursorController fullscreenCursorController;
+    private readonly WindowCloseCoordinator closeCoordinator = new();
     private IInputElement? focusBeforeDialog;
-    private bool closePreparationRunning;
-    private bool closePreparationComplete;
     private bool isDisposed;
 
     public MainWindow(IApplicationLogger logger, ICaptureDeviceDiscoveryService discoveryService, ICapturePreviewService previewService, string? startupNotice = null)
@@ -211,12 +210,32 @@ public partial class MainWindow : Window, IDisposable
     {
         _ = sender;
         _ = e;
-        if (isDisposed) return;
-        _ = Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(async () =>
+        if (!FullscreenDisplayChangePolicy.ShouldRequestExit(
+                isDisposed,
+                fullscreenController.IsFullscreen,
+                fullscreenController.IsTransitioning)) return;
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() =>
         {
-            try { await viewModel.ExitFullscreenForWindowAsync(FullscreenExitReason.DisplayRemoved); }
-            catch { fullscreenCursorController.RestoreForFailure(); }
+            if (!FullscreenDisplayChangePolicy.ShouldRequestExit(
+                    isDisposed,
+                    fullscreenController.IsFullscreen,
+                    fullscreenController.IsTransitioning)) return;
+            fullscreenCursorController.RestoreForFailure();
+            _ = ExitFullscreenAfterDisplayChangeAsync();
         }));
+    }
+
+    private async Task ExitFullscreenAfterDisplayChangeAsync()
+    {
+        try
+        {
+            await viewModel.ExitFullscreenForWindowAsync(FullscreenExitReason.DisplayRemoved);
+        }
+        catch (Exception exception)
+        {
+            fullscreenCursorController.RestoreForFailure();
+            SafeLogError("A display-change fullscreen exit failed safely.", exception);
+        }
     }
 
     private static bool TryFocus(IInputElement? candidate) => candidate switch
@@ -243,27 +262,45 @@ public partial class MainWindow : Window, IDisposable
         ActionButtons.HorizontalAlignment = stacked ? HorizontalAlignment.Left : HorizontalAlignment.Right;
     }
 
-    private async void OnClosing(object? sender, CancelEventArgs e)
+    private void OnClosing(object? sender, CancelEventArgs e)
     {
         _ = sender;
-        if (closePreparationComplete)
+        var decision = closeCoordinator.Evaluate(
+            fullscreenController.IsFullscreen,
+            fullscreenController.IsTransitioning);
+        if (decision == WindowCloseDecision.AllowAndDispose)
         {
             Dispose();
             return;
         }
 
         e.Cancel = true;
-        if (closePreparationRunning) return;
-        closePreparationRunning = true;
+        if (decision == WindowCloseDecision.CancelWhilePreparing) return;
         viewModel.SetWindowClosing();
         fullscreenCursorController.ExitFullscreen();
-        try { await viewModel.ExitFullscreenForWindowAsync(FullscreenExitReason.Closing); }
-        catch { }
+        _ = PrepareFullscreenCloseAsync();
+    }
+
+    private async Task PrepareFullscreenCloseAsync()
+    {
+        try
+        {
+            await viewModel.ExitFullscreenForWindowAsync(FullscreenExitReason.Closing);
+        }
+        catch (Exception exception)
+        {
+            SafeLogError("Fullscreen close preparation failed safely.", exception);
+        }
         finally
         {
-            closePreparationComplete = true;
-            closePreparationRunning = false;
-            _ = Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(Close));
+            if (closeCoordinator.CompletePreparationAndRequestClose())
+            {
+                try { _ = Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(Close)); }
+                catch (Exception exception) when (exception is InvalidOperationException or TaskCanceledException)
+                {
+                    SafeLogError("The prepared window close could not be reissued because shutdown was already underway.", exception);
+                }
+            }
         }
     }
 
@@ -278,6 +315,7 @@ public partial class MainWindow : Window, IDisposable
     {
         if (isDisposed) return;
         isDisposed = true;
+        closeCoordinator.MarkDisposed();
         viewModel.PropertyChanging -= OnViewModelPropertyChanging;
         viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         SizeChanged -= OnWindowSizeChanged;
@@ -287,7 +325,26 @@ public partial class MainWindow : Window, IDisposable
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         fullscreenCursorController.Dispose();
         viewModel.Dispose();
-        fullscreenController.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        var controllerDisposal = fullscreenController.DisposeAsync();
+        if (controllerDisposal.IsCompletedSuccessfully)
+            controllerDisposal.GetAwaiter().GetResult();
+        else
+            _ = ObserveControllerDisposalAsync(controllerDisposal);
         GC.SuppressFinalize(this);
+    }
+
+    private async Task ObserveControllerDisposalAsync(ValueTask disposal)
+    {
+        try { await disposal; }
+        catch (Exception exception) { SafeLogError("Fullscreen controller disposal failed safely.", exception); }
+    }
+
+    private void SafeLogError(string message, Exception exception)
+    {
+        try { logger.LogError(message, exception); }
+        catch
+        {
+            // Logging must not interfere with display recovery or window shutdown.
+        }
     }
 }

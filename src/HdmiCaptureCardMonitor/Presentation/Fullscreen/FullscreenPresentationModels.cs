@@ -61,17 +61,52 @@ public enum FullscreenTransitionDisposition
     SafeFallback
 }
 
+public enum FullscreenOperation
+{
+    SnapshotCapture,
+    Entry,
+    ExactRestore,
+    SafeFallback,
+    Disposal
+}
+
 public sealed record FullscreenFailure(
+    FullscreenOperation Operation,
     string CustomerMessage,
     string TechnicalMessage,
+    uint? NativeError = null,
     int? HResult = null,
     Exception? Exception = null)
 {
-    public static FullscreenFailure Unexpected(Exception exception) => new(
-        "Fullscreen could not be opened. Live preview is still running.",
-        "The fullscreen presentation adapter threw unexpectedly.",
-        exception.HResult,
-        exception);
+    public static FullscreenFailure Create(
+        FullscreenOperation operation,
+        string technicalMessage,
+        uint? nativeError = null,
+        Exception? exception = null) => new(
+            operation,
+            CustomerMessageFor(operation),
+            technicalMessage,
+            nativeError,
+            exception?.HResult,
+            exception);
+
+    public static FullscreenFailure Unexpected(
+        FullscreenOperation operation,
+        Exception exception) => Create(
+            operation,
+            "The fullscreen presentation adapter threw unexpectedly.",
+            exception: exception);
+
+    public static string CustomerMessageFor(FullscreenOperation operation) => operation switch
+    {
+        FullscreenOperation.SnapshotCapture or FullscreenOperation.Entry =>
+            "Fullscreen could not be opened. Live preview is still running.",
+        FullscreenOperation.ExactRestore =>
+            "The previous window position could not be restored exactly. Live preview is still running in a safe window.",
+        FullscreenOperation.SafeFallback or FullscreenOperation.Disposal =>
+            "Fullscreen could not be closed normally. Live preview is still running.",
+        _ => "Fullscreen presentation could not be changed. Live preview is still running."
+    };
 }
 
 public sealed record FullscreenTransitionResult(

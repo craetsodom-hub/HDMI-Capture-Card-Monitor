@@ -7,21 +7,39 @@ namespace HdmiCaptureCardMonitor.Presentation.Fullscreen;
 
 internal sealed unsafe class WindowNativeApi : IWindowNativeApi
 {
+    private readonly NativeWindowStyleAccessor styleAccessor;
+
+    public WindowNativeApi() : this(new CsWin32WindowStyleInterop()) { }
+
+    internal WindowNativeApi(IWindowStyleInterop styleInterop) =>
+        styleAccessor = new NativeWindowStyleAccessor(styleInterop);
+
     public FullscreenSnapshotResult CaptureWindow(nint windowHandle)
     {
-        if (windowHandle == 0) return FullscreenSnapshotResult.Failed(Failure("The application window is not available."));
+        if (windowHandle == 0) return FullscreenSnapshotResult.Failed(Failure(FullscreenOperation.SnapshotCapture, "The application window is not available."));
         var window = new HWND((void*)windowHandle);
         var placement = new WINDOWPLACEMENT { length = (uint)sizeof(WINDOWPLACEMENT) };
         if (!PInvoke.GetWindowPlacement(window, &placement))
-            return FullscreenSnapshotResult.Failed(Failure("GetWindowPlacement failed."));
+            return FullscreenSnapshotResult.Failed(Failure(FullscreenOperation.SnapshotCapture, "GetWindowPlacement failed."));
         if (!TryGetNearestMonitor(windowHandle, out var monitor, out var monitorFailure))
-            return FullscreenSnapshotResult.Failed(monitorFailure ?? Failure("Monitor selection failed."));
+            return FullscreenSnapshotResult.Failed(monitorFailure ?? Failure(FullscreenOperation.SnapshotCapture, "Monitor selection failed."));
+
+        var style = styleAccessor.Read(windowHandle, NativeWindowStyleKind.Style);
+        if (!style.IsSuccess)
+            return FullscreenSnapshotResult.Failed(Failure(
+                FullscreenOperation.SnapshotCapture,
+                "GetWindowLongPtr could not read the normal window style.",
+                style.ErrorCode));
+        var extendedStyle = styleAccessor.Read(windowHandle, NativeWindowStyleKind.ExtendedStyle);
+        if (!extendedStyle.IsSuccess)
+            return FullscreenSnapshotResult.Failed(Failure(
+                FullscreenOperation.SnapshotCapture,
+                "GetWindowLongPtr could not read the extended window style.",
+                extendedStyle.ErrorCode));
 
         var snapshot = new FullscreenWindowSnapshot(
             ToPlacement(placement),
-            new FullscreenNativeStyle(
-                PInvoke.GetWindowLongPtr(window, WINDOW_LONG_PTR_INDEX.GWL_STYLE),
-                PInvoke.GetWindowLongPtr(window, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE)),
+            new FullscreenNativeStyle(style.Value, extendedStyle.Value),
             0,
             0,
             0,
@@ -39,7 +57,7 @@ internal sealed unsafe class WindowNativeApi : IWindowNativeApi
         failure = null;
         if (windowHandle == 0)
         {
-            failure = Failure("The application window is not available for monitor selection.");
+            failure = Failure(FullscreenOperation.SnapshotCapture, "The application window is not available for monitor selection.");
             return false;
         }
 
@@ -48,14 +66,14 @@ internal sealed unsafe class WindowNativeApi : IWindowNativeApi
             MONITOR_FROM_FLAGS.MONITOR_DEFAULTTONEAREST);
         if (nativeMonitor.Value is null)
         {
-            failure = Failure("MonitorFromWindow returned no monitor.");
+            failure = Failure(FullscreenOperation.SnapshotCapture, "MonitorFromWindow returned no monitor.");
             return false;
         }
 
         var info = new MONITORINFO { cbSize = (uint)sizeof(MONITORINFO) };
         if (!PInvoke.GetMonitorInfo(nativeMonitor, &info))
         {
-            failure = Failure("GetMonitorInfo failed.");
+            failure = Failure(FullscreenOperation.SnapshotCapture, "GetMonitorInfo failed.");
             return false;
         }
 
@@ -73,7 +91,7 @@ internal sealed unsafe class WindowNativeApi : IWindowNativeApi
     public FullscreenTransitionResult ApplyFullscreenBounds(nint windowHandle, FullscreenMonitor monitor)
     {
         if (windowHandle == 0 || monitor.Bounds.IsEmpty)
-            return FullscreenTransitionResult.Failed(Failure("Fullscreen monitor bounds are unavailable."));
+            return FullscreenTransitionResult.Failed(Failure(FullscreenOperation.Entry, "Fullscreen monitor bounds are unavailable."));
         var bounds = monitor.Bounds;
         var applied = PInvoke.SetWindowPos(
             new HWND((void*)windowHandle),
@@ -86,31 +104,38 @@ internal sealed unsafe class WindowNativeApi : IWindowNativeApi
             SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE |
             SET_WINDOW_POS_FLAGS.SWP_NOZORDER |
             SET_WINDOW_POS_FLAGS.SWP_SHOWWINDOW);
-        return applied ? FullscreenTransitionResult.Applied : FullscreenTransitionResult.Failed(Failure("SetWindowPos could not apply fullscreen bounds."));
+        return applied
+            ? FullscreenTransitionResult.Applied
+            : FullscreenTransitionResult.Failed(Failure(FullscreenOperation.Entry, "SetWindowPos could not apply fullscreen bounds."));
     }
 
     public FullscreenTransitionResult RestoreWindow(nint windowHandle, FullscreenWindowSnapshot snapshot)
     {
-        if (windowHandle == 0) return FullscreenTransitionResult.Failed(Failure("The application window is unavailable for restoration."));
+        if (windowHandle == 0)
+            return FullscreenTransitionResult.Failed(Failure(FullscreenOperation.ExactRestore, "The application window is unavailable for restoration."));
         var window = new HWND((void*)windowHandle);
-        _ = PInvoke.SetWindowLongPtr(window, WINDOW_LONG_PTR_INDEX.GWL_STYLE, snapshot.NativeStyle.Style);
-        _ = PInvoke.SetWindowLongPtr(window, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, snapshot.NativeStyle.ExtendedStyle);
-        var placement = ToNativePlacement(snapshot.Placement);
-        if (!PInvoke.SetWindowPlacement(window, &placement))
-            return FullscreenTransitionResult.Failed(Failure("SetWindowPlacement could not restore the saved placement."));
-        var framed = PInvoke.SetWindowPos(
-            window,
-            default,
-            0,
-            0,
-            0,
-            0,
-            SET_WINDOW_POS_FLAGS.SWP_FRAMECHANGED |
-            SET_WINDOW_POS_FLAGS.SWP_NOMOVE |
-            SET_WINDOW_POS_FLAGS.SWP_NOSIZE |
-            SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE |
-            SET_WINDOW_POS_FLAGS.SWP_NOZORDER);
-        return framed ? FullscreenTransitionResult.Applied : FullscreenTransitionResult.Failed(Failure("The restored window frame could not be refreshed."));
+        var restored = WindowRestorationResult.Execute(
+            () => styleAccessor.Write(windowHandle, NativeWindowStyleKind.Style, snapshot.NativeStyle.Style),
+            () => styleAccessor.Write(windowHandle, NativeWindowStyleKind.ExtendedStyle, snapshot.NativeStyle.ExtendedStyle),
+            () => RestorePlacement(window, snapshot.Placement),
+            () => PInvoke.SetWindowPos(
+                window,
+                default,
+                0,
+                0,
+                0,
+                0,
+                SET_WINDOW_POS_FLAGS.SWP_FRAMECHANGED |
+                SET_WINDOW_POS_FLAGS.SWP_NOMOVE |
+                SET_WINDOW_POS_FLAGS.SWP_NOSIZE |
+                SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE |
+                SET_WINDOW_POS_FLAGS.SWP_NOZORDER));
+        return restored.IsSuccess
+            ? FullscreenTransitionResult.Applied
+            : FullscreenTransitionResult.Failed(Failure(
+                FullscreenOperation.ExactRestore,
+                $"Exact window restoration failed for: {restored.FailureSummary}.",
+                restored.FirstNativeError));
     }
 
     public FullscreenTransitionResult ApplySafeWindowedFallback(
@@ -119,7 +144,7 @@ internal sealed unsafe class WindowNativeApi : IWindowNativeApi
         FullscreenMonitor nearestMonitor)
     {
         if (windowHandle == 0 || nearestMonitor.WorkArea.IsEmpty)
-            return FullscreenTransitionResult.Failed(Failure("No visible work area is available for a safe fallback."));
+            return FullscreenTransitionResult.Failed(Failure(FullscreenOperation.SafeFallback, "No visible work area is available for a safe fallback."));
         var work = nearestMonitor.WorkArea;
         var requested = snapshot?.Placement.NormalPosition;
         var width = Math.Min(requested?.Width ?? 1180, work.Width);
@@ -139,7 +164,7 @@ internal sealed unsafe class WindowNativeApi : IWindowNativeApi
             SET_WINDOW_POS_FLAGS.SWP_SHOWWINDOW);
         return applied
             ? FullscreenTransitionResult.Applied
-            : FullscreenTransitionResult.Failed(Failure("A visible fallback window could not be placed."));
+            : FullscreenTransitionResult.Failed(Failure(FullscreenOperation.SafeFallback, "A visible fallback window could not be placed."));
     }
 
     private static FullscreenWindowPlacement ToPlacement(WINDOWPLACEMENT placement) => new(
@@ -163,10 +188,18 @@ internal sealed unsafe class WindowNativeApi : IWindowNativeApi
             placement.NormalPosition.Bottom)
     };
 
+    private static bool RestorePlacement(HWND window, FullscreenWindowPlacement savedPlacement)
+    {
+        var placement = ToNativePlacement(savedPlacement);
+        return PInvoke.SetWindowPlacement(window, &placement);
+    }
+
     private static FullscreenRectangle ToRectangle(RECT rectangle) =>
         new(rectangle.left, rectangle.top, rectangle.right, rectangle.bottom);
 
-    private static FullscreenFailure Failure(string technicalMessage) => new(
-        "Fullscreen could not be opened. Live preview is still running.",
-        technicalMessage);
+    private static FullscreenFailure Failure(
+        FullscreenOperation operation,
+        string technicalMessage,
+        uint? nativeError = null) =>
+        FullscreenFailure.Create(operation, technicalMessage, nativeError);
 }

@@ -373,7 +373,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception)
         {
-            result = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(exception));
+            result = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(
+                entering ? FullscreenOperation.Entry : FullscreenOperation.ExactRestore,
+                exception));
         }
 
         ApplyFullscreenTransitionResult(result, showFailureMessage: true);
@@ -681,7 +683,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             $"and surface HWND 0x{PreviewSurfaceHandle:X}.");
         FullscreenTransitionResult result;
         try { result = await fullscreenController.ExitAsync(reason); }
-        catch (Exception exception) { result = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(exception)); }
+        catch (Exception exception)
+        {
+            result = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(
+                reason == FullscreenExitReason.Disposal ? FullscreenOperation.Disposal : FullscreenOperation.ExactRestore,
+                exception));
+        }
         ApplyFullscreenTransitionResult(result, showFailureMessage);
         SafeLogInformation(
             $"Fullscreen exit ({reason}) completed in {Stopwatch.GetElapsedTime(started).TotalMilliseconds:0.0} ms " +
@@ -693,7 +700,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (!result.IsSuccess && result.Failure is not null)
         {
-            SafeLogError(result.Failure.TechnicalMessage, result.Failure.Exception ?? new InvalidOperationException(result.Failure.TechnicalMessage));
+            var nativeDetail = result.Failure.NativeError is uint nativeError
+                ? $" Native Win32 error: {nativeError}."
+                : string.Empty;
+            var technicalMessage = result.Failure.TechnicalMessage + nativeDetail;
+            SafeLogError(technicalMessage, result.Failure.Exception ?? new InvalidOperationException(technicalMessage));
             if (showFailureMessage) StatusMessage = result.Failure.CustomerMessage;
         }
         NotifyFullscreenProperties();
