@@ -4,6 +4,7 @@ using HdmiCaptureCardMonitor.Capture.Interop;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Capture.Devices;
 using HdmiCaptureCardMonitor.Capture.Preview;
+using HdmiCaptureCardMonitor.Capture.Audio;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Models;
 using HdmiCaptureCardMonitor.Presentation;
@@ -16,6 +17,8 @@ public partial class App : Application, IDisposable
     private MediaFoundationRuntime? mediaFoundationRuntime;
     private ICaptureDeviceDiscoveryService? discoveryService;
     private ICapturePreviewService? previewService;
+    private CoreAudioEndpointDiscoveryService? audioDiscoveryService;
+    private WasapiAudioMonitorService? audioMonitorService;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -23,6 +26,8 @@ public partial class App : Application, IDisposable
         ApplicationThemeManager.ApplyPreferredTheme(Resources);
         var loggerCreation = ApplicationLoggerFactory.CreateDefault();
         logger = loggerCreation.Logger;
+        audioDiscoveryService = new CoreAudioEndpointDiscoveryService(logger);
+        audioMonitorService = new WasapiAudioMonitorService(logger);
         mediaFoundationRuntime = new MediaFoundationRuntime(logger);
         var startup = mediaFoundationRuntime.Initialize();
         logger.Information($"Media Foundation startup result: {startup.Status} ({FormatHResult(startup.HResult)}).");
@@ -45,7 +50,7 @@ public partial class App : Application, IDisposable
                 startup.HResult));
         }
         logger.Information("Application startup completed.");
-        new MainWindow(logger, discoveryService, previewService, startupNotice).Show();
+        new MainWindow(logger, discoveryService, previewService, audioDiscoveryService, audioMonitorService, startupNotice).Show();
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -57,6 +62,8 @@ public partial class App : Application, IDisposable
 
     public void Dispose()
     {
+        audioMonitorService?.Dispose();
+        audioDiscoveryService?.Dispose();
         previewService?.Dispose();
         discoveryService?.Dispose();
         var discoverySettled = discoveryService is not MediaFoundationDeviceDiscoveryService activeDiscovery || activeDiscovery.WorkersSettled;
@@ -71,6 +78,8 @@ public partial class App : Application, IDisposable
         }
         previewService = null;
         discoveryService = null;
+        audioMonitorService = null;
+        audioDiscoveryService = null;
         mediaFoundationRuntime = null;
         GC.SuppressFinalize(this);
     }

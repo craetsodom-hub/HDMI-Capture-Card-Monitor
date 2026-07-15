@@ -4,11 +4,13 @@ using System.Diagnostics.CodeAnalysis;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
+using HdmiCaptureCardMonitor.Capture.Audio;
 using HdmiCaptureCardMonitor.Capture.Devices;
 using HdmiCaptureCardMonitor.Capture.Preview;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Models;
 using HdmiCaptureCardMonitor.Presentation.Fullscreen;
+using HdmiCaptureCardMonitor.Presentation;
 
 namespace HdmiCaptureCardMonitor.ViewModels;
 
@@ -18,6 +20,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly CaptureSessionStateMachine stateMachine;
     private readonly ICaptureDeviceDiscoveryService discoveryService;
     private readonly ICapturePreviewService previewService;
+    private readonly IAudioEndpointDiscoveryService audioDiscoveryService;
+    private readonly IAudioMonitorService audioMonitorService;
     private readonly IPreviewSurface? previewSurface;
     private readonly IFullscreenWindowController? fullscreenController;
     private readonly SynchronizationContext? uiContext;
@@ -26,9 +30,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? deviceScanCancellation;
     private CancellationTokenSource? formatScanCancellation;
     private CancellationTokenSource? previewCancellation;
+    private CancellationTokenSource? audioScanCancellation;
+    private CancellationTokenSource? audioStartCancellation;
     private int deviceScanGeneration;
     private int formatScanGeneration;
     private int previewGeneration;
+    private int audioScanGeneration;
     private Guid activePreviewSessionId;
     private Task formatDiscoveryCompletion = Task.CompletedTask;
     private Task? previewStopOperation;
@@ -38,6 +45,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
     public ObservableCollection<NativeVideoCapability> Formats { get; } = [];
+    public ObservableCollection<AudioEndpointChoice> AudioInputs { get; } = [];
+    public ObservableCollection<AudioEndpointChoice> AudioOutputs { get; } = [];
     [ObservableProperty] private string statusMessage = "Scanning for video devices…";
     [ObservableProperty] private string previewTitle = "Scanning for video devices…";
     [ObservableProperty] private string previewDescription = "Please wait while Windows checks available video inputs.";
@@ -53,6 +62,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private CaptureDevice? selectedDevice;
     [ObservableProperty] private NativeVideoCapability? selectedFormat;
     [ObservableProperty] private PreviewDiagnostics? currentPreviewDiagnostics;
+    [ObservableProperty] private AudioEndpointChoice? selectedAudioInput = AudioEndpointChoice.NoAudio;
+    [ObservableProperty] private AudioEndpointChoice? selectedAudioOutput = AudioEndpointChoice.SystemDefaultOutput;
+    [ObservableProperty] private bool isAudioScanRunning;
+    [ObservableProperty] private AudioMonitorState audioMonitorState = AudioMonitorState.Off;
+    [ObservableProperty] private string audioStatusText = "Audio off";
+    [ObservableProperty] private double audioVolume = 100;
+    [ObservableProperty] private bool isAudioMuted;
+    [ObservableProperty] private AudioMonitorDiagnostics? currentAudioDiagnostics;
 
     public CaptureSessionState SessionState => stateMachine.CurrentState;
     public string SessionStateDisplay => GetSessionStateDisplay(SessionState);
@@ -60,9 +77,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public bool IsMainContentEnabled => !IsInformationDialogOpen;
     public bool CanOpenInformationDialog => !IsInformationDialogOpen && !IsFullscreenPresentation && !IsFullscreenTransitioning && !windowClosing;
     public bool CanChangeCaptureSelection => !IsInformationDialogOpen && !IsPreviewActive && !IsDeviceScanRunning && !IsFormatScanRunning;
+    public bool CanChangeAudioSelection => CanChangeCaptureSelection && !IsAudioScanRunning && !audioMonitorService.IsActive && !windowClosing;
+    public bool CanAdjustAudio => AudioMonitorState is AudioMonitorState.Starting or AudioMonitorState.Monitoring or AudioMonitorState.Muted;
+    public string MuteAccessText => IsAudioMuted ? "_Unmute" : "_Mute";
     public bool HasDevices => Devices.Count > 0 && CanChangeCaptureSelection;
     public bool HasFormats => Formats.Count > 0 && CanChangeCaptureSelection;
-    public bool CanRefreshDevices => !IsInformationDialogOpen && !IsDeviceScanRunning && !IsPreviewActive;
+    public bool CanRefreshDevices => !IsInformationDialogOpen && !IsDeviceScanRunning && !IsAudioScanRunning && !IsPreviewActive;
     public string DevicePlaceholder => IsDeviceScanRunning ? "Scanning for video devices…" : Devices.Count > 0 ? "Select a capture device" : "No device available";
     public string FormatPlaceholder => SelectedDevice is null ? "Select a device first" : IsFormatScanRunning ? "Reading supported formats…" : Formats.Count > 0 ? "Select a native format" : "No native formats available";
     public bool CanStartCapture =>
@@ -73,6 +93,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         !IsDeviceScanRunning &&
         !IsFormatScanRunning &&
         previewSurface?.IsPresentable == true &&
+        !audioMonitorService.IsActive &&
         !previewService.IsActive;
     public bool CanStartStopPreview => !IsInformationDialogOpen && (CanStartCapture || SessionState == CaptureSessionState.Previewing);
     public string StartStopText => SessionState switch
@@ -136,11 +157,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ICapturePreviewService? previewService = null,
         IPreviewSurface? previewSurface = null,
         IFullscreenWindowController? fullscreenController = null,
-        SynchronizationContext? synchronizationContext = null)
+        SynchronizationContext? synchronizationContext = null,
+        IAudioEndpointDiscoveryService? audioDiscoveryService = null,
+        IAudioMonitorService? audioMonitorService = null)
     {
         this.logger = logger;
         this.discoveryService = discoveryService ?? new UnavailableCaptureDeviceDiscoveryService("Video device discovery is unavailable.");
         this.previewService = previewService ?? new UnavailableCapturePreviewService(new PreviewFailure(PreviewFailureCategory.DeviceUnavailable, "Live preview is unavailable."));
+        this.audioDiscoveryService = audioDiscoveryService ?? new UnavailableAudioEndpointDiscoveryService();
+        this.audioMonitorService = audioMonitorService ?? new UnavailableAudioMonitorService();
         this.previewSurface = previewSurface;
         this.fullscreenController = fullscreenController;
         this.stateMachine = stateMachine ?? new CaptureSessionStateMachine();
@@ -150,6 +175,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         this.previewService.FirstFramePresented += OnFirstFramePresented;
         this.previewService.DiagnosticsUpdated += OnDiagnosticsUpdated;
         this.previewService.PreviewFailed += OnPreviewFailed;
+        this.audioMonitorService.StateChanged += OnAudioStateChanged;
+        this.audioMonitorService.DiagnosticsUpdated += OnAudioDiagnosticsUpdated;
+        this.audioMonitorService.MonitoringFailed += OnAudioMonitoringFailed;
         if (this.fullscreenController is not null) this.fullscreenController.StateChanged += OnFullscreenControllerStateChanged;
         if (this.previewSurface is not null)
         {
@@ -157,6 +185,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             this.previewSurface.PresentabilityChanged += OnSurfaceAvailabilityChanged;
         }
         if (!string.IsNullOrWhiteSpace(startupNotice)) StatusMessage = startupNotice;
+        AudioInputs.Add(AudioEndpointChoice.NoAudio);
+        AudioOutputs.Add(AudioEndpointChoice.SystemDefaultOutput);
     }
 
     public void StartInitialDiscovery() => _ = RefreshDevicesAsync();
@@ -168,6 +198,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     [RelayCommand(CanExecute = nameof(CanRefreshDevices))]
     private async Task RefreshDevicesAsync()
+    {
+        var audioRefresh = RefreshAudioEndpointsAsync();
+        await RefreshVideoDevicesAsync();
+        await audioRefresh;
+    }
+
+    private async Task RefreshVideoDevicesAsync()
     {
         RetirePreviewSession(activePreviewSessionId);
         activePreviewSessionId = Guid.Empty;
@@ -242,6 +279,55 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task RefreshAudioEndpointsAsync()
+    {
+        var generation = Interlocked.Increment(ref audioScanGeneration);
+        var localCancellation = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref audioScanCancellation, localCancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+        var selectedInputId = SelectedAudioInput?.Endpoint?.Id;
+        var selectedOutputId = SelectedAudioOutput?.Endpoint?.Id;
+        IsAudioScanRunning = true;
+        try
+        {
+            var result = await audioDiscoveryService.EnumerateActiveEndpointsAsync(localCancellation.Token);
+            if (disposed || generation != Volatile.Read(ref audioScanGeneration)) return;
+            AudioInputs.Clear();
+            AudioOutputs.Clear();
+            AudioInputs.Add(AudioEndpointChoice.NoAudio);
+            AudioOutputs.Add(AudioEndpointChoice.SystemDefaultOutput);
+            if (!result.IsSuccess)
+            {
+                SelectedAudioInput = AudioEndpointChoice.NoAudio;
+                SelectedAudioOutput = AudioEndpointChoice.SystemDefaultOutput;
+                AudioMonitorState = AudioMonitorState.Faulted;
+                AudioStatusText = "Audio unavailable";
+                SafeLogWarning($"Audio endpoint discovery failed safely with {result.Failure!.Category}.");
+                return;
+            }
+
+            foreach (var endpoint in result.CaptureEndpoints)
+                AudioInputs.Add(new AudioEndpointChoice(endpoint.DisplayName, endpoint));
+            foreach (var endpoint in result.RenderEndpoints)
+                AudioOutputs.Add(new AudioEndpointChoice(endpoint.DisplayName, endpoint));
+            SelectedAudioInput = AudioInputs.FirstOrDefault(choice => choice.Endpoint?.Id == selectedInputId) ?? AudioEndpointChoice.NoAudio;
+            SelectedAudioOutput = AudioOutputs.FirstOrDefault(choice => choice.Endpoint?.Id == selectedOutputId) ?? AudioEndpointChoice.SystemDefaultOutput;
+        }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (disposed || generation != Volatile.Read(ref audioScanGeneration)) return;
+            AudioMonitorState = AudioMonitorState.Faulted;
+            AudioStatusText = "Audio unavailable";
+            SafeLogError("Audio endpoint discovery failed safely.", exception);
+        }
+        finally
+        {
+            if (!disposed && generation == Volatile.Read(ref audioScanGeneration)) IsAudioScanRunning = false;
+        }
+    }
+
     partial void OnSelectedDeviceChanged(CaptureDevice? value)
     {
         formatDiscoveryCompletion = LoadFormatsAsync(value);
@@ -256,6 +342,25 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnIsDeviceScanRunningChanged(bool value) { _ = value; NotifyCaptureProperties(); }
     partial void OnIsFormatScanRunningChanged(bool value) { _ = value; NotifyCaptureProperties(); }
+    partial void OnIsAudioScanRunningChanged(bool value) { _ = value; NotifyAudioProperties(); NotifyCaptureProperties(); }
+    partial void OnSelectedAudioInputChanged(AudioEndpointChoice? value)
+    {
+        AudioStatusText = value?.Endpoint is null ? "Audio off" : "Waiting for live video";
+        AudioMonitorState = value?.Endpoint is null ? AudioMonitorState.Off : AudioMonitorState.WaitingForVideo;
+        NotifyAudioProperties();
+    }
+    partial void OnSelectedAudioOutputChanged(AudioEndpointChoice? value) { _ = value; NotifyAudioProperties(); }
+    partial void OnAudioVolumeChanged(double value)
+    {
+        var clamped = AudioGainController.ClampVolumePercent(value);
+        if (!value.Equals(clamped)) { AudioVolume = clamped; return; }
+        audioMonitorService.SetVolume(clamped);
+    }
+    partial void OnIsAudioMutedChanged(bool value)
+    {
+        audioMonitorService.SetMuted(value);
+        OnPropertyChanged(nameof(MuteAccessText));
+    }
     partial void OnPreviewTitleChanged(string value)
     {
         _ = value;
@@ -355,6 +460,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         else await StartPreviewAsync();
     }
 
+    [RelayCommand(CanExecute = nameof(CanAdjustAudio))]
+    private void ToggleAudioMute() => IsAudioMuted = !IsAudioMuted;
+
     [RelayCommand(CanExecute = nameof(CanToggleFullscreen))]
     private async Task ToggleFullscreenAsync()
     {
@@ -408,6 +516,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         activePreviewSessionId = Guid.Empty;
         hasPresentedFrame = false;
         CurrentPreviewDiagnostics = null;
+        CurrentAudioDiagnostics = null;
+        AudioMonitorState = SelectedAudioInput?.Endpoint is null ? AudioMonitorState.Off : AudioMonitorState.WaitingForVideo;
+        AudioStatusText = SelectedAudioInput?.Endpoint is null ? "Audio off" : "Waiting for live video";
+        NotifyAudioProperties();
         IsPreviewMessageVisible = true;
         TryTransition(CaptureSessionState.Starting);
         StatusMessage = "Starting live preview…";
@@ -488,6 +600,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         PreviewTitle = "Stopping preview…";
         PreviewDescription = "Releasing the video device and graphics resources safely.";
 
+        await StopAudioSafelyAsync();
+
         PreviewStopResult result;
         try { result = await previewService.StopAsync(); }
         catch (Exception exception)
@@ -528,8 +642,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         InformationDialogEyebrow = "HELP";
         InformationDialogTitle = "Start a live monitor preview";
-        InformationDialogDescription = "Connect a compatible video capture device, select Refresh, choose the device and one of its native formats, then select Start. Fullscreen requires an active live preview.";
-        InformationDialogDetails = "Press F11 to enter or exit fullscreen monitor mode, or press Escape to leave fullscreen. Capture remains active while the window changes presentation. If access is denied, enable camera access for desktop apps in Windows Privacy & security. Physical USB HDMI capture-card compatibility remains a required release test.";
+        InformationDialogDescription = "Connect a compatible video capture device, select Refresh, choose the device and one of its native formats, then select Start. Audio monitoring is optional; select No audio to keep it off. Fullscreen requires an active live preview.";
+        InformationDialogDetails = "For audio, choose an input and System default output or a named output before starting; use headphones when monitoring a microphone to prevent feedback. Press F11 to enter or exit fullscreen, or Escape to leave it. Capture remains active while the window changes presentation, and audio does not restart. If access is denied, enable camera access and microphone access for desktop apps in Windows Privacy & security. Physical USB HDMI capture-card video and audio compatibility remain required release tests.";
         IsInformationDialogOpen = true;
     }
 
@@ -563,6 +677,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         var activeCancellation = Interlocked.Exchange(ref previewCancellation, null);
         activeCancellation?.Cancel();
         activeCancellation?.Dispose();
+        var audioScan = Interlocked.Exchange(ref audioScanCancellation, null);
+        audioScan?.Cancel();
+        audioScan?.Dispose();
+        var audioStart = Interlocked.Exchange(ref audioStartCancellation, null);
+        audioStart?.Cancel();
+        audioStart?.Dispose();
+        audioMonitorService.StateChanged -= OnAudioStateChanged;
+        audioMonitorService.DiagnosticsUpdated -= OnAudioDiagnosticsUpdated;
+        audioMonitorService.MonitoringFailed -= OnAudioMonitoringFailed;
+        try { _ = audioMonitorService.StopAsync().GetAwaiter().GetResult(); }
+        catch (Exception exception) { SafeLogError("Audio shutdown failed safely during window disposal.", exception); }
         try { _ = previewService.StopAsync().GetAwaiter().GetResult(); }
         catch (Exception exception) { SafeLogError("Preview shutdown failed safely during window disposal.", exception); }
         stateMachine.StateChanged -= OnStateChanged;
@@ -578,13 +703,126 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsPreviewMessageVisible = false;
         TryTransition(CaptureSessionState.Previewing);
         StatusMessage = "Previewing live video.";
+        if (SelectedAudioInput?.Endpoint is not null) _ = StartAudioAfterFirstFrameAsync(e.SessionId);
+    });
+
+    private async Task StartAudioAfterFirstFrameAsync(Guid videoSessionId)
+    {
+        var input = SelectedAudioInput?.Endpoint;
+        if (input is null || disposed || videoSessionId != activePreviewSessionId || SessionState != CaptureSessionState.Previewing) return;
+        var localCancellation = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref audioStartCancellation, localCancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+        AudioMonitorState = AudioMonitorState.Starting;
+        AudioStatusText = "Starting audio…";
+        NotifyAudioProperties();
+        AudioMonitorStartResult result;
+        try
+        {
+            result = await audioMonitorService.StartAsync(new AudioMonitorStartRequest(
+                input,
+                SelectedAudioOutput?.Endpoint,
+                AudioVolume,
+                IsAudioMuted), localCancellation.Token);
+        }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested) { return; }
+        catch (Exception exception)
+        {
+            result = AudioMonitorStartResult.Failed(Guid.Empty,
+                new AudioMonitorFailure(AudioMonitorFailureCategory.OtherFailure, "Audio monitoring could not start.", null, exception));
+        }
+
+        PostToUi(() =>
+        {
+            if (disposed || videoSessionId != activePreviewSessionId || SessionState != CaptureSessionState.Previewing) return;
+            if (result.IsSuccess) return;
+            AudioMonitorState = AudioMonitorState.Faulted;
+            AudioStatusText = "Audio unavailable";
+            StatusMessage = $"Video is live. Audio monitoring could not start. {result.Failure?.CustomerMessage}".Trim();
+            NotifyAudioProperties();
+        });
+    }
+
+    private async Task StopAudioSafelyAsync()
+    {
+        var cancellation = Interlocked.Exchange(ref audioStartCancellation, null);
+        cancellation?.Cancel();
+        cancellation?.Dispose();
+        if (!audioMonitorService.IsActive)
+        {
+            AudioMonitorState = AudioMonitorState.Off;
+            AudioStatusText = "Audio off";
+            NotifyAudioProperties();
+            return;
+        }
+
+        AudioMonitorState = AudioMonitorState.Stopping;
+        AudioStatusText = "Stopping audio…";
+        NotifyAudioProperties();
+        try
+        {
+            var result = await audioMonitorService.StopAsync();
+            if (!result.IsSuccess)
+            {
+                SafeLogWarning($"Audio stop completed with {result.Failure?.Category}; video cleanup continued.");
+                if (result.TimedOut && audioMonitorService.IsActive)
+                {
+                    AudioMonitorState = AudioMonitorState.Faulted;
+                    AudioStatusText = "Audio cleanup timed out";
+                    NotifyAudioProperties();
+                    return;
+                }
+            }
+        }
+        catch (Exception exception) { SafeLogError("Audio stop failed safely; video cleanup continued.", exception); }
+        AudioMonitorState = AudioMonitorState.Off;
+        AudioStatusText = "Audio off";
+        CurrentAudioDiagnostics = null;
+        NotifyAudioProperties();
+    }
+
+    private void OnAudioStateChanged(object? sender, AudioMonitorStateChangedEventArgs e) => PostToUi(() =>
+    {
+        if (disposed || audioMonitorService.ActiveSessionId != e.SessionId) return;
+        AudioMonitorState = e.CurrentState;
+        AudioStatusText = e.CurrentState switch
+        {
+            AudioMonitorState.WaitingForVideo => "Waiting for live video",
+            AudioMonitorState.Starting => "Starting audio…",
+            AudioMonitorState.Monitoring => "Monitoring audio",
+            AudioMonitorState.Muted => "Muted",
+            AudioMonitorState.Stopping => "Stopping audio…",
+            AudioMonitorState.Faulted => "Audio unavailable",
+            _ => "Audio off"
+        };
+        NotifyAudioProperties();
+    });
+
+    private void OnAudioDiagnosticsUpdated(object? sender, AudioMonitorDiagnosticsEventArgs e) => PostToUi(() =>
+    {
+        if (disposed || audioMonitorService.ActiveSessionId != e.SessionId) return;
+        CurrentAudioDiagnostics = e.Diagnostics;
+    });
+
+    private void OnAudioMonitoringFailed(object? sender, AudioMonitorFailureEventArgs e) => PostToUi(() =>
+    {
+        if (disposed || audioMonitorService.ActiveSessionId != e.SessionId) return;
+        AudioMonitorState = AudioMonitorState.Faulted;
+        AudioStatusText = e.Failure.Category is AudioMonitorFailureCategory.DeviceInvalidated or AudioMonitorFailureCategory.ResourcesInvalidated
+            ? "Audio device disconnected"
+            : "Audio unavailable";
+        if (SessionState == CaptureSessionState.Previewing)
+            StatusMessage = $"Video is live. Audio monitoring could not start. {e.Failure.CustomerMessage}";
+        SafeLogWarning($"Audio monitoring failed safely with {e.Failure.Category}; video remained active.");
+        NotifyAudioProperties();
     });
 
     private void OnDiagnosticsUpdated(object? sender, PreviewDiagnosticsEventArgs e) => PostToUi(() =>
     {
         if (disposed || activePreviewSessionId != e.SessionId) return;
         CurrentPreviewDiagnostics = e.Diagnostics;
-        if (SessionState == CaptureSessionState.Previewing)
+        if (SessionState == CaptureSessionState.Previewing && AudioMonitorState != AudioMonitorState.Faulted)
             StatusMessage = $"Previewing · {e.Diagnostics.FramesReceivedPerSecond:0.0} received / {e.Diagnostics.RenderedFramesPerSecond:0.0} rendered fps";
     });
 
@@ -606,6 +844,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
             await ExitFullscreenPresentationAsync(FullscreenExitReason.PreviewFailure, showFailureMessage: false);
             if (disposed || activePreviewSessionId != e.SessionId) return;
+
+            await StopAudioSafelyAsync();
 
             var generation = Interlocked.Increment(ref previewGeneration);
             activePreviewSessionId = e.SessionId;
@@ -769,11 +1009,26 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         NotifyFullscreenProperties();
         RefreshDevicesCommand.NotifyCanExecuteChanged();
         TogglePreviewCommand.NotifyCanExecuteChanged();
+        NotifyAudioProperties();
+    }
+
+    private void NotifyAudioProperties()
+    {
+        OnPropertyChanged(nameof(CanChangeAudioSelection));
+        OnPropertyChanged(nameof(CanAdjustAudio));
+        OnPropertyChanged(nameof(MuteAccessText));
+        ToggleAudioMuteCommand.NotifyCanExecuteChanged();
     }
 
     private void SafeLogInformation(string message)
     {
         try { logger.Information(message); }
+        catch (Exception) { }
+    }
+
+    private void SafeLogWarning(string message)
+    {
+        try { logger.Warning(message); }
         catch (Exception) { }
     }
 

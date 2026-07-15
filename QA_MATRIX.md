@@ -67,3 +67,18 @@ Hardware rows are completed only when the named configuration was genuinely exer
 | Display and theme | Dark/light themes and live fullscreen at 100%, 150%, and 200% scaling | Executed successfully on one 2160 × 1440 display; secondary and negative-coordinate physical-monitor validation unavailable |
 | Safely induced failures | Fullscreen rollback, safe fallback, runtime preview failure, Stop, display-change, and disposal-during-entry | Deterministic tests executed; no real preview failure or monitor removal was deliberately forced |
 | Physical USB HDMI | HDMI compatibility, no-signal behavior, disconnect semantics, and HDMI latency | Outstanding; mandatory before Microsoft Store release |
+
+## Phase 5 evidence
+
+| Category | Current evidence | Status |
+|---|---|---|
+| Automated audio core | Endpoint safety, complete-frame ring-buffer wrap/overflow/underflow, gain and mute ramps, state/lifecycle ordering, stale-session rejection, fullscreen continuity, typed failures, bounded stop, and repeated disposal | Executed in the ordinary suite without hardware |
+| Endpoint discovery | Active Realtek microphone and speaker endpoints enumerated with safe names; opaque IDs were not displayed or logged; system-default output remains an explicit choice | Executed successfully on this Windows machine |
+| Initialization and format | `IAudioClient3` shared-period initialization; 32-bit IEEE float, 48 kHz, 2 channels; 480-frame capture/render periods; 1,056-frame native buffers | Executed successfully in a muted hardware session |
+| Buffer policy | 1,440-frame target, 2,880-frame hard capacity, complete frames only, silence on underrun, oldest-frame discard on overrun, one-period render writes | Source and deterministic-test guarded |
+| Ten-minute muted run | 28,692,672 captured; 28,791,552 rendered; 100,512 silent; 208 underruns; 1 overrun; 96 dropped; 5 discontinuities; 0 timestamp errors; maximum observed queue 1,920 frames | Completed, but recurring underruns are a Phase 5 blocker |
+| Corrected-policy observation | One-minute run: 2,861,472 captured; 2,866,560 rendered; 6,624 silent; 13 underruns; 0 overruns; 0 dropped; 5 discontinuities; 0 timestamp errors; maximum observed queue 2,496 frames (52 ms) | Cleaner bounded behavior, but recurring underruns remain unresolved; no stable-audio claim |
+| Repeated lifecycle | Twenty muted Start/Stop cycles completed and capture/render endpoints were released after every cycle | Executed successfully |
+| Fullscreen and video ordering | Audio ownership is independent of presentation state; first real video frame precedes audio start; audio stops before video cleanup | Deterministic lifecycle tests; audible live fullscreen validation remains outstanding |
+| Audible quality | No wired headphones were available; unmuted microphone-to-speaker monitoring was intentionally not attempted because of feedback risk | Outstanding; no crackle, drift, gap, or quality claim |
+| Physical USB HDMI | Video/audio endpoint association, HDMI audio format behavior, A/V synchronization, feedback-safe audible monitoring, no-signal/disconnect behavior, and HDMI latency | Outstanding; mandatory before Microsoft Store release |

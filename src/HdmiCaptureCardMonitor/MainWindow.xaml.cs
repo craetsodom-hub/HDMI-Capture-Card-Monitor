@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
+using HdmiCaptureCardMonitor.Capture.Audio;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Presentation;
 using HdmiCaptureCardMonitor.Presentation.Fullscreen;
@@ -26,7 +27,13 @@ public partial class MainWindow : Window, IDisposable
     private IInputElement? focusBeforeDialog;
     private bool isDisposed;
 
-    public MainWindow(IApplicationLogger logger, ICaptureDeviceDiscoveryService discoveryService, ICapturePreviewService previewService, string? startupNotice = null)
+    public MainWindow(
+        IApplicationLogger logger,
+        ICaptureDeviceDiscoveryService discoveryService,
+        ICapturePreviewService previewService,
+        IAudioEndpointDiscoveryService audioDiscoveryService,
+        IAudioMonitorService audioMonitorService,
+        string? startupNotice = null)
     {
         this.logger = logger;
         InitializeComponent();
@@ -40,7 +47,9 @@ public partial class MainWindow : Window, IDisposable
             discoveryService: discoveryService,
             previewService: previewService,
             previewSurface: PreviewHost,
-            fullscreenController: fullscreenController);
+            fullscreenController: fullscreenController,
+            audioDiscoveryService: audioDiscoveryService,
+            audioMonitorService: audioMonitorService);
         DataContext = viewModel;
         viewModel.PropertyChanging += OnViewModelPropertyChanging;
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
@@ -255,6 +264,18 @@ public partial class MainWindow : Window, IDisposable
         Grid.SetColumn(FormatPanel, stacked ? 0 : 2);
         Grid.SetRow(FormatPanel, stacked ? 1 : 0);
         FormatPanel.Margin = stacked ? LayoutMetrics.StackedSectionMargin : LayoutMetrics.NoMargin;
+
+        AudioInputColumn.Width = LayoutMetrics.StarColumn;
+        AudioInputGapColumn.Width = stacked ? LayoutMetrics.CollapsedColumn : LayoutMetrics.WideControlGapColumn;
+        AudioOutputColumn.Width = stacked ? LayoutMetrics.CollapsedColumn : LayoutMetrics.StarColumn;
+        AudioOutputGapColumn.Width = stacked ? LayoutMetrics.CollapsedColumn : LayoutMetrics.WideControlGapColumn;
+        AudioControlColumn.Width = stacked ? LayoutMetrics.CollapsedColumn : LayoutMetrics.StarColumn;
+        Grid.SetColumn(AudioOutputPanel, stacked ? 0 : 2);
+        Grid.SetRow(AudioOutputPanel, stacked ? 1 : 0);
+        AudioOutputPanel.Margin = stacked ? LayoutMetrics.StackedSectionMargin : LayoutMetrics.NoMargin;
+        Grid.SetColumn(AudioControlPanel, stacked ? 0 : 4);
+        Grid.SetRow(AudioControlPanel, stacked ? 2 : 0);
+        AudioControlPanel.Margin = stacked ? LayoutMetrics.StackedSectionMargin : LayoutMetrics.NoMargin;
 
         Grid.SetColumn(ActionButtons, stacked ? 0 : 1);
         Grid.SetRow(ActionButtons, stacked ? 1 : 0);

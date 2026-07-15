@@ -97,6 +97,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <Grid x:Name="ConfigurationGrid">
                     <Grid.RowDefinitions>
@@ -153,7 +154,43 @@
                     </StackPanel>
                 </Grid>
 
-                <Grid x:Name="ActionGrid" Grid.Row="1" Margin="{StaticResource SectionGapTop}">
+                <Grid x:Name="AudioGrid" Grid.Row="1" Margin="{StaticResource SectionGapTop}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition x:Name="AudioInputColumn" Width="*" />
+                        <ColumnDefinition x:Name="AudioInputGapColumn" Width="{StaticResource ControlGapLength}" />
+                        <ColumnDefinition x:Name="AudioOutputColumn" Width="*" />
+                        <ColumnDefinition x:Name="AudioOutputGapColumn" Width="{StaticResource ControlGapLength}" />
+                        <ColumnDefinition x:Name="AudioControlColumn" Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel x:Name="AudioInputPanel">
+                        <Label Content="Audio _input" Target="{Binding ElementName=AudioInputSelector}" Style="{StaticResource FieldLabelControl}" />
+                        <ComboBox x:Name="AudioInputSelector" ItemsSource="{Binding AudioInputs}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedAudioInput}" IsEnabled="{Binding CanChangeAudioSelection}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Audio input" ToolTip="{Binding SelectedItem.DisplayName, ElementName=AudioInputSelector}" />
+                    </StackPanel>
+                    <StackPanel x:Name="AudioOutputPanel" Grid.Column="2">
+                        <Label Content="Audio _output" Target="{Binding ElementName=AudioOutputSelector}" Style="{StaticResource FieldLabelControl}" />
+                        <ComboBox x:Name="AudioOutputSelector" ItemsSource="{Binding AudioOutputs}" DisplayMemberPath="DisplayName" SelectedItem="{Binding SelectedAudioOutput}" IsEnabled="{Binding CanChangeAudioSelection}" Style="{StaticResource SelectorControl}" AutomationProperties.Name="Audio output" ToolTip="{Binding SelectedItem.DisplayName, ElementName=AudioOutputSelector}" />
+                    </StackPanel>
+                    <StackPanel x:Name="AudioControlPanel" Grid.Column="4">
+                        <TextBlock Text="{Binding AudioStatusText}" Style="{StaticResource FieldLabel}" TextTrimming="CharacterEllipsis" ToolTip="{Binding AudioStatusText}" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="{Binding MuteAccessText}" Command="{Binding ToggleAudioMuteCommand}" IsEnabled="{Binding CanAdjustAudio}" Style="{StaticResource QuietButton}" Margin="{StaticResource ControlGapRight}" AutomationProperties.Name="Mute or unmute audio monitoring" />
+                            <Slider Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding AudioVolume}" IsEnabled="{Binding CanAdjustAudio}" VerticalAlignment="Center" TickFrequency="1" IsSnapToTickEnabled="False" AutomationProperties.Name="Audio monitoring volume" ToolTip="Application audio monitoring volume" />
+                            <TextBlock Grid.Column="2" Margin="{StaticResource StatusBadgeGap}" Text="{Binding AudioVolume, StringFormat={}{0:0}%}" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" MinWidth="36" TextAlignment="Right" />
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+
+                <Grid x:Name="ActionGrid" Grid.Row="2" Margin="{StaticResource SectionGapTop}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
