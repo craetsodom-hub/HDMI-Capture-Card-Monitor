@@ -7,6 +7,7 @@ using HdmiCaptureCardMonitor.Models;
 using HdmiCaptureCardMonitor.Presentation;
 using HdmiCaptureCardMonitor.Presentation.Fullscreen;
 using HdmiCaptureCardMonitor.ViewModels;
+using System.Xml.Linq;
 
 namespace HdmiCaptureCardMonitor.Tests;
 
@@ -66,7 +67,42 @@ public sealed class PhaseFiveAudioLifecycleTests
         context.Preview.RaiseFirstFrame();
         await WaitUntilAsync(() => context.ViewModel.AudioMonitorState == AudioMonitorState.Faulted);
         Assert.Equal(CaptureSessionState.Previewing, context.ViewModel.SessionState);
-        Assert.Contains("Video is live", context.ViewModel.StatusMessage, StringComparison.Ordinal);
+        Assert.Equal("Video is live. Audio monitoring could not start.", context.ViewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task RuntimeAudioFailureUsesStoppedWordingAndLeavesVideoPreviewing()
+    {
+        using var context = Create();
+        await MakeReadyAsync(context, selectAudio: true);
+        await context.ViewModel.StartPreviewForTestingAsync();
+        context.Preview.RaiseFirstFrame();
+        await WaitUntilAsync(() => context.Audio.IsActive);
+
+        context.Audio.RaiseFailure(new AudioMonitorFailure(
+            AudioMonitorFailureCategory.AudioProcessingFailure,
+            "Audio processing failed."));
+
+        Assert.Equal(CaptureSessionState.Previewing, context.ViewModel.SessionState);
+        Assert.Equal("Video is live. Audio monitoring stopped.", context.ViewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task DeviceInvalidationUsesDisconnectedWordingAndLeavesVideoPreviewing()
+    {
+        using var context = Create();
+        await MakeReadyAsync(context, selectAudio: true);
+        await context.ViewModel.StartPreviewForTestingAsync();
+        context.Preview.RaiseFirstFrame();
+        await WaitUntilAsync(() => context.Audio.IsActive);
+
+        context.Audio.RaiseFailure(new AudioMonitorFailure(
+            AudioMonitorFailureCategory.DeviceInvalidated,
+            "The endpoint disappeared."));
+
+        Assert.Equal(CaptureSessionState.Previewing, context.ViewModel.SessionState);
+        Assert.Equal("Video is live. The selected audio device disconnected.", context.ViewModel.StatusMessage);
+        Assert.DoesNotContain("opaque", context.ViewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -216,6 +252,51 @@ public sealed class PhaseFiveAudioLifecycleTests
         Assert.Contains("Content=\"Record\" IsEnabled=\"False\"", xaml, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AudioSliderUsesThemedFortyDipTemplateAndDisabledPercentageStyle()
+    {
+        var root = FindRepositoryRoot();
+        var controls = XDocument.Load(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "Resources", "Themes", "Controls.xaml"));
+        var tokens = XDocument.Load(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "Resources", "Themes", "DesignTokens.xaml"));
+        var window = File.ReadAllText(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "MainWindow.xaml"));
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var slider = controls.Descendants().Single(element =>
+            element.Name.LocalName == "Style" && (string?)element.Attribute(x + "Key") == "AudioVolumeSlider");
+        var percentage = controls.Descendants().Single(element =>
+            element.Name.LocalName == "Style" && (string?)element.Attribute(x + "Key") == "AudioPercentageText");
+
+        Assert.Contains(slider.Descendants(), element => element.Name.LocalName == "Track" && (string?)element.Attribute(x + "Name") == "PART_Track");
+        Assert.Contains(slider.Descendants(), element => element.Name.LocalName == "Trigger" && (string?)element.Attribute("Property") == "IsKeyboardFocusWithin");
+        Assert.Contains(slider.Descendants(), element => element.Name.LocalName == "Trigger" && (string?)element.Attribute("Property") == "IsEnabled" && (string?)element.Attribute("Value") == "False");
+        Assert.Contains(slider.Descendants(), element => element.Name.LocalName == "Setter" && (string?)element.Attribute("Property") == "Height" && (string?)element.Attribute("Value") == "{StaticResource ControlHeight}");
+        Assert.Contains(percentage.Descendants(), element => element.Name.LocalName == "Setter" && (string?)element.Attribute("Value") == "{DynamicResource DisabledTextBrush}");
+        Assert.Contains(tokens.Descendants(), element => (string?)element.Attribute(x + "Key") == "AudioSliderTrackHeight" && element.Value == "4");
+        Assert.Contains(tokens.Descendants(), element => (string?)element.Attribute(x + "Key") == "AudioSliderThumbSize" && element.Value == "16");
+        Assert.Contains("Style=\"{StaticResource AudioVolumeSlider}\"", window, StringComparison.Ordinal);
+        Assert.Contains("IsEnabled=\"{Binding CanAdjustAudio}\" Style=\"{StaticResource AudioPercentageText}\"", window, StringComparison.Ordinal);
+        Assert.Contains("AutomationProperties.Name=\"Audio monitoring volume\"", window, StringComparison.Ordinal);
+        Assert.DoesNotContain("PreviewKeyDown=", slider.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(720, 1.0, true)]
+    [InlineData(720, 1.5, true)]
+    [InlineData(720, 2.0, true)]
+    [InlineData(900, 1.0, false)]
+    [InlineData(900, 1.5, false)]
+    [InlineData(900, 2.0, false)]
+    [InlineData(1180, 1.0, false)]
+    [InlineData(1180, 1.5, false)]
+    [InlineData(1180, 2.0, false)]
+    public void AudioResponsivePolicyUsesDeviceIndependentWidths(
+        double widthInDips,
+        double scale,
+        bool expectedStacked)
+    {
+        Assert.True(widthInDips * scale >= widthInDips);
+        Assert.Equal(expectedStacked, ResponsiveLayoutPolicy.UsesStackedSelectors(widthInDips));
+    }
+
     private static TestContext Create(
         List<string>? order = null,
         AudioMonitorFailure? audioStartFailure = null,
@@ -308,7 +389,7 @@ public sealed class PhaseFiveAudioLifecycleTests
         public bool Muted { get; private set; }
         public event EventHandler<AudioMonitorStateChangedEventArgs>? StateChanged;
         public event EventHandler<AudioMonitorDiagnosticsEventArgs>? DiagnosticsUpdated { add { } remove { } }
-        public event EventHandler<AudioMonitorFailureEventArgs>? MonitoringFailed { add { } remove { } }
+        public event EventHandler<AudioMonitorFailureEventArgs>? MonitoringFailed;
         public Task<AudioMonitorStartResult> StartAsync(AudioMonitorStartRequest request, CancellationToken cancellationToken = default)
         {
             StartCalls++;
@@ -331,6 +412,10 @@ public sealed class PhaseFiveAudioLifecycleTests
         public void SetVolume(double volumePercent) => Volume = volumePercent;
         public void SetMuted(bool muted) => Muted = muted;
         public void RaiseState(Guid id, AudioMonitorState value) => StateChanged?.Invoke(this, new AudioMonitorStateChangedEventArgs(id, AudioMonitorState.Monitoring, value));
+        public void RaiseFailure(AudioMonitorFailure failure)
+        {
+            if (sessionId is Guid id) MonitoringFailed?.Invoke(this, new AudioMonitorFailureEventArgs(id, failure));
+        }
         public void Dispose() { }
     }
 

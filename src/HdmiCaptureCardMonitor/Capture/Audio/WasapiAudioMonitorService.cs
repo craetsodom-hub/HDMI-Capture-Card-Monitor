@@ -5,9 +5,9 @@ namespace HdmiCaptureCardMonitor.Capture.Audio;
 internal sealed class WasapiAudioMonitorService : IAudioMonitorService
 {
     private readonly IApplicationLogger logger;
-    private readonly bool preferAudioClient3;
+    private readonly Func<AudioMonitorStartRequest, IAudioMonitorSession> sessionFactory;
     private readonly object syncRoot = new();
-    private WasapiAudioMonitorSession? activeSession;
+    private IAudioMonitorSession? activeSession;
     private bool disposed;
 
     public WasapiAudioMonitorService(IApplicationLogger logger) : this(logger, true) { }
@@ -15,7 +15,15 @@ internal sealed class WasapiAudioMonitorService : IAudioMonitorService
     internal WasapiAudioMonitorService(IApplicationLogger logger, bool preferAudioClient3)
     {
         this.logger = logger;
-        this.preferAudioClient3 = preferAudioClient3;
+        sessionFactory = request => new WasapiAudioMonitorSession(request, logger, preferAudioClient3);
+    }
+
+    internal WasapiAudioMonitorService(
+        IApplicationLogger logger,
+        Func<AudioMonitorStartRequest, IAudioMonitorSession> sessionFactory)
+    {
+        this.logger = logger;
+        this.sessionFactory = sessionFactory ?? throw new ArgumentNullException(nameof(sessionFactory));
     }
 
     public bool IsActive { get { lock (syncRoot) return activeSession is not null; } }
@@ -29,14 +37,14 @@ internal sealed class WasapiAudioMonitorService : IAudioMonitorService
     public async Task<AudioMonitorStartResult> StartAsync(AudioMonitorStartRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        WasapiAudioMonitorSession session;
+        IAudioMonitorSession session;
         lock (syncRoot)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             if (activeSession is not null)
                 return AudioMonitorStartResult.Failed(activeSession.SessionId,
                     new AudioMonitorFailure(AudioMonitorFailureCategory.DeviceInUse, "Audio monitoring is already active."));
-            session = new WasapiAudioMonitorSession(request, logger, preferAudioClient3);
+            session = sessionFactory(request);
             Subscribe(session);
             activeSession = session;
         }
@@ -53,7 +61,7 @@ internal sealed class WasapiAudioMonitorService : IAudioMonitorService
 
     public async Task<AudioMonitorStopResult> StopAsync(CancellationToken cancellationToken = default)
     {
-        WasapiAudioMonitorSession? session;
+        IAudioMonitorSession? session;
         lock (syncRoot) session = activeSession;
         if (session is null) return AudioMonitorStopResult.Stopped;
         var result = await session.StopAsync(cancellationToken).ConfigureAwait(false);
@@ -83,21 +91,21 @@ internal sealed class WasapiAudioMonitorService : IAudioMonitorService
         if (result.TimedOut) SafeWarning("The audio monitor retained its worker because bounded shutdown timed out.");
     }
 
-    private void Subscribe(WasapiAudioMonitorSession session)
+    private void Subscribe(IAudioMonitorSession session)
     {
         session.StateChanged += ForwardState;
         session.DiagnosticsUpdated += ForwardDiagnostics;
         session.MonitoringFailed += ForwardFailure;
     }
 
-    private void Unsubscribe(WasapiAudioMonitorSession session)
+    private void Unsubscribe(IAudioMonitorSession session)
     {
         session.StateChanged -= ForwardState;
         session.DiagnosticsUpdated -= ForwardDiagnostics;
         session.MonitoringFailed -= ForwardFailure;
     }
 
-    private void ClearIfCurrent(WasapiAudioMonitorSession session)
+    private void ClearIfCurrent(IAudioMonitorSession session)
     {
         lock (syncRoot)
         {
@@ -107,15 +115,20 @@ internal sealed class WasapiAudioMonitorService : IAudioMonitorService
         }
     }
 
-    private async Task ClearWhenCompletedAsync(WasapiAudioMonitorSession session)
+    private async Task ClearWhenCompletedAsync(IAudioMonitorSession session)
     {
         await session.Completion.ConfigureAwait(false);
         ClearIfCurrent(session);
     }
 
-    private void ForwardState(object? sender, AudioMonitorStateChangedEventArgs e) => StateChanged?.Invoke(this, e);
-    private void ForwardDiagnostics(object? sender, AudioMonitorDiagnosticsEventArgs e) => DiagnosticsUpdated?.Invoke(this, e);
-    private void ForwardFailure(object? sender, AudioMonitorFailureEventArgs e) => MonitoringFailed?.Invoke(this, e);
+    private void ForwardState(object? sender, AudioMonitorStateChangedEventArgs e) =>
+        SafeAudioEventDispatch.Publish(StateChanged, this, e, logger, "service state");
+
+    private void ForwardDiagnostics(object? sender, AudioMonitorDiagnosticsEventArgs e) =>
+        SafeAudioEventDispatch.Publish(DiagnosticsUpdated, this, e, logger, "service diagnostics");
+
+    private void ForwardFailure(object? sender, AudioMonitorFailureEventArgs e) =>
+        SafeAudioEventDispatch.Publish(MonitoringFailed, this, e, logger, "service failure");
 
     private void SafeWarning(string message)
     {

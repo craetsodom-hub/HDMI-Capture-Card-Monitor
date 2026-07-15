@@ -32,6 +32,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? previewCancellation;
     private CancellationTokenSource? audioScanCancellation;
     private CancellationTokenSource? audioStartCancellation;
+    private bool audioMonitoringStarted;
     private int deviceScanGeneration;
     private int formatScanGeneration;
     private int previewGeneration;
@@ -345,6 +346,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     partial void OnIsAudioScanRunningChanged(bool value) { _ = value; NotifyAudioProperties(); NotifyCaptureProperties(); }
     partial void OnSelectedAudioInputChanged(AudioEndpointChoice? value)
     {
+        audioMonitoringStarted = false;
         AudioStatusText = value?.Endpoint is null ? "Audio off" : "Waiting for live video";
         AudioMonitorState = value?.Endpoint is null ? AudioMonitorState.Off : AudioMonitorState.WaitingForVideo;
         NotifyAudioProperties();
@@ -715,6 +717,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         previous?.Cancel();
         previous?.Dispose();
         AudioMonitorState = AudioMonitorState.Starting;
+        audioMonitoringStarted = false;
         AudioStatusText = "Starting audio…";
         NotifyAudioProperties();
         AudioMonitorStartResult result;
@@ -736,10 +739,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         PostToUi(() =>
         {
             if (disposed || videoSessionId != activePreviewSessionId || SessionState != CaptureSessionState.Previewing) return;
-            if (result.IsSuccess) return;
+            if (result.IsSuccess)
+            {
+                audioMonitoringStarted = true;
+                return;
+            }
             AudioMonitorState = AudioMonitorState.Faulted;
             AudioStatusText = "Audio unavailable";
-            StatusMessage = $"Video is live. Audio monitoring could not start. {result.Failure?.CustomerMessage}".Trim();
+            StatusMessage = "Video is live. Audio monitoring could not start.";
             NotifyAudioProperties();
         });
     }
@@ -751,6 +758,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         cancellation?.Dispose();
         if (!audioMonitorService.IsActive)
         {
+            audioMonitoringStarted = false;
             AudioMonitorState = AudioMonitorState.Off;
             AudioStatusText = "Audio off";
             NotifyAudioProperties();
@@ -777,6 +785,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception) { SafeLogError("Audio stop failed safely; video cleanup continued.", exception); }
         AudioMonitorState = AudioMonitorState.Off;
+        audioMonitoringStarted = false;
         AudioStatusText = "Audio off";
         CurrentAudioDiagnostics = null;
         NotifyAudioProperties();
@@ -786,6 +795,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (disposed || audioMonitorService.ActiveSessionId != e.SessionId) return;
         AudioMonitorState = e.CurrentState;
+        if (e.CurrentState is AudioMonitorState.Monitoring or AudioMonitorState.Muted)
+            audioMonitoringStarted = true;
         AudioStatusText = e.CurrentState switch
         {
             AudioMonitorState.WaitingForVideo => "Waiting for live video",
@@ -808,12 +819,19 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void OnAudioMonitoringFailed(object? sender, AudioMonitorFailureEventArgs e) => PostToUi(() =>
     {
         if (disposed || audioMonitorService.ActiveSessionId != e.SessionId) return;
+        var wasMonitoring = audioMonitoringStarted;
+        audioMonitoringStarted = false;
         AudioMonitorState = AudioMonitorState.Faulted;
-        AudioStatusText = e.Failure.Category is AudioMonitorFailureCategory.DeviceInvalidated or AudioMonitorFailureCategory.ResourcesInvalidated
+        var disconnected = e.Failure.Category is AudioMonitorFailureCategory.DeviceInvalidated or AudioMonitorFailureCategory.ResourcesInvalidated;
+        AudioStatusText = disconnected
             ? "Audio device disconnected"
             : "Audio unavailable";
         if (SessionState == CaptureSessionState.Previewing)
-            StatusMessage = $"Video is live. Audio monitoring could not start. {e.Failure.CustomerMessage}";
+            StatusMessage = disconnected
+                ? "Video is live. The selected audio device disconnected."
+                : wasMonitoring
+                    ? "Video is live. Audio monitoring stopped."
+                    : "Video is live. Audio monitoring could not start.";
         SafeLogWarning($"Audio monitoring failed safely with {e.Failure.Category}; video remained active.");
         NotifyAudioProperties();
     });

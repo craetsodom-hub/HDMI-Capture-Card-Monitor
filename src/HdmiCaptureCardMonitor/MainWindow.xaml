@@ -184,8 +184,8 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Button Grid.Column="0" Content="{Binding MuteAccessText}" Command="{Binding ToggleAudioMuteCommand}" IsEnabled="{Binding CanAdjustAudio}" Style="{StaticResource QuietButton}" Margin="{StaticResource ControlGapRight}" AutomationProperties.Name="Mute or unmute audio monitoring" />
-                            <Slider Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding AudioVolume}" IsEnabled="{Binding CanAdjustAudio}" VerticalAlignment="Center" TickFrequency="1" IsSnapToTickEnabled="False" AutomationProperties.Name="Audio monitoring volume" ToolTip="Application audio monitoring volume" />
-                            <TextBlock Grid.Column="2" Margin="{StaticResource StatusBadgeGap}" Text="{Binding AudioVolume, StringFormat={}{0:0}%}" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" MinWidth="36" TextAlignment="Right" />
+                            <Slider Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding AudioVolume}" IsEnabled="{Binding CanAdjustAudio}" Style="{StaticResource AudioVolumeSlider}" VerticalAlignment="Center" TickFrequency="1" IsSnapToTickEnabled="False" AutomationProperties.Name="Audio monitoring volume" ToolTip="Application audio monitoring volume" />
+                            <TextBlock Grid.Column="2" Margin="{StaticResource StatusBadgeGap}" Text="{Binding AudioVolume, StringFormat={}{0:0}%}" IsEnabled="{Binding CanAdjustAudio}" Style="{StaticResource AudioPercentageText}" VerticalAlignment="Center" MinWidth="36" TextAlignment="Right" />
                         </Grid>
                     </StackPanel>
                 </Grid>

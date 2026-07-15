@@ -30,10 +30,10 @@ internal sealed class AudioQueueRateController : IDisposable
 {
     private const int ControlIntervalMilliseconds = 500;
     private const int StartupTimeoutMilliseconds = 2_000;
-    private const int StopTimeoutMilliseconds = 2_000;
+    private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
     private const double MinimumChangePpm = 50;
 
-    private readonly IAudioClient renderClient;
+    private readonly IAudioClient? renderClient;
     private readonly IApplicationLogger logger;
     private readonly double nominalSampleRate;
     private readonly int targetQueueFrames;
@@ -41,10 +41,14 @@ internal sealed class AudioQueueRateController : IDisposable
     private readonly ManualResetEvent stopEvent = new(false);
     private readonly ManualResetEvent initializedEvent = new(false);
     private readonly Thread thread;
+    private readonly Action<WaitHandle>? testWorker;
+    private readonly TimeSpan stopTimeout;
+    private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int queueFrames;
     private long appliedPpmBits;
     private int available;
-    private int disposed;
+    private int stopRequested;
+    private int handlesDisposed;
 
     internal AudioQueueRateController(
         IAudioClient renderClient,
@@ -58,10 +62,32 @@ internal sealed class AudioQueueRateController : IDisposable
         this.nominalSampleRate = nominalSampleRate;
         this.targetQueueFrames = targetQueueFrames;
         this.periodFrames = periodFrames;
+        stopTimeout = DefaultStopTimeout;
         thread = new Thread(ThreadMain)
         {
             IsBackground = true,
             Name = "Audio queue rate controller",
+            Priority = ThreadPriority.BelowNormal
+        };
+        thread.SetApartmentState(ApartmentState.MTA);
+    }
+
+    internal AudioQueueRateController(
+        Action<WaitHandle> testWorker,
+        TimeSpan stopTimeout,
+        IApplicationLogger? logger = null)
+    {
+        this.testWorker = testWorker ?? throw new ArgumentNullException(nameof(testWorker));
+        ArgumentOutOfRangeException.ThrowIfLessThan(stopTimeout, TimeSpan.Zero);
+        this.stopTimeout = stopTimeout;
+        this.logger = logger ?? NullApplicationLogger.Instance;
+        nominalSampleRate = 48_000;
+        targetQueueFrames = 960;
+        periodFrames = 480;
+        thread = new Thread(ThreadMain)
+        {
+            IsBackground = true,
+            Name = "Test audio queue rate controller",
             Priority = ThreadPriority.BelowNormal
         };
         thread.SetApartmentState(ApartmentState.MTA);
@@ -72,6 +98,7 @@ internal sealed class AudioQueueRateController : IDisposable
         : null;
 
     internal bool IsAvailable => Volatile.Read(ref available) != 0;
+    internal Task Completion => completion.Task;
 
     internal void UpdateQueueDepth(int value) => Volatile.Write(ref queueFrames, value);
 
@@ -83,15 +110,13 @@ internal sealed class AudioQueueRateController : IDisposable
 
     internal bool Stop()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0) return !thread.IsAlive;
-        stopEvent.Set();
-        if (thread.IsAlive && !thread.Join(StopTimeoutMilliseconds))
+        if (Interlocked.Exchange(ref stopRequested, 1) == 0) stopEvent.Set();
+        if (!completion.Task.Wait(stopTimeout))
         {
             SafeWarning("The audio queue-rate controller did not stop within its two-second bound.");
             return false;
         }
-        initializedEvent.Dispose();
-        stopEvent.Dispose();
+        DisposeHandles();
         return true;
     }
 
@@ -103,10 +128,18 @@ internal sealed class AudioQueueRateController : IDisposable
         var comInitialized = false;
         try
         {
+            if (testWorker is not null)
+            {
+                Volatile.Write(ref available, 1);
+                initializedEvent.Set();
+                testWorker(stopEvent);
+                return;
+            }
+
             var apartment = PInvoke.CoInitializeEx(null, COINIT.COINIT_MULTITHREADED);
             if (apartment.Failed) Marshal.ThrowExceptionForHR(apartment.Value);
             comInitialized = true;
-            renderClient.GetService(out adjustment);
+            renderClient!.GetService(out adjustment);
             var activeAdjustment = adjustment!;
             Volatile.Write(ref available, 1);
             initializedEvent.Set();
@@ -127,12 +160,33 @@ internal sealed class AudioQueueRateController : IDisposable
         {
             SafeWarning($"Windows audio queue-rate correction became unavailable (0x{exception.HResult:X8}).");
         }
+        catch (Exception exception)
+        {
+            SafeWarning($"The audio queue-rate controller ended safely after an unexpected {exception.GetType().Name}.");
+        }
         finally
         {
-            initializedEvent.Set();
-            Volatile.Write(ref available, 0);
-            if (adjustment is not null && Marshal.IsComObject(adjustment)) Marshal.ReleaseComObject(adjustment);
-            if (comInitialized) PInvoke.CoUninitialize();
+            try
+            {
+                initializedEvent.Set();
+                Volatile.Write(ref available, 0);
+                try
+                {
+                    if (adjustment is not null && Marshal.IsComObject(adjustment)) Marshal.ReleaseComObject(adjustment);
+                }
+                catch (Exception exception)
+                {
+                    SafeWarning($"Audio queue-rate adjustment cleanup failed safely ({exception.GetType().Name}).");
+                }
+                finally
+                {
+                    if (comInitialized) PInvoke.CoUninitialize();
+                }
+            }
+            finally
+            {
+                completion.TrySetResult();
+            }
         }
     }
 
@@ -140,5 +194,12 @@ internal sealed class AudioQueueRateController : IDisposable
     {
         try { logger.Warning(message); }
         catch (Exception) { }
+    }
+
+    private void DisposeHandles()
+    {
+        if (Interlocked.Exchange(ref handlesDisposed, 1) != 0) return;
+        initializedEvent.Dispose();
+        stopEvent.Dispose();
     }
 }

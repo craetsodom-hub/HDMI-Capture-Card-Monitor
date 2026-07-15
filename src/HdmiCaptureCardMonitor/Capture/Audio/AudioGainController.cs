@@ -4,7 +4,7 @@ namespace HdmiCaptureCardMonitor.Capture.Audio;
 /// Lock-free control target with audio-thread-owned ramp state. Volume and mute
 /// occupy one atomic word so the packet loop observes a coherent target.
 /// </summary>
-internal sealed class AudioGainController
+internal sealed class AudioGainController : IAudioGainProcessor
 {
     private const int GainScale = 1_000_000;
     private const long MutedMask = 1L << 32;
@@ -83,6 +83,9 @@ internal sealed class AudioGainController
             }
         }
     }
+
+    void IAudioGainProcessor.Process(Span<float> interleavedSamples, int frameCount, int channelCount) =>
+        Process(interleavedSamples, frameCount, channelCount);
 
     internal static double ClampVolumePercent(double value)
     {

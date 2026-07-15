@@ -56,20 +56,40 @@ public sealed class AudioHardwareIntegrationTests
         long previousUnderruns = -1;
         long previousOverruns = -1;
         long previousDrops = -1;
+        long previousDiscontinuities = 0;
+        var discontinuityObservations = new List<(TimeSpan Elapsed, long Count)>();
         for (var index = 0; index < samples.Length; index++)
         {
             var sample = samples[index];
+            if (sample.Value.DiscontinuityCount > previousDiscontinuities)
+                discontinuityObservations.Add((sample.Elapsed, sample.Value.DiscontinuityCount));
             var changed = sample.Value.UnderrunCount != previousUnderruns ||
-                sample.Value.OverrunCount != previousOverruns || sample.Value.DroppedFrames != previousDrops;
-            if (changed || index % 20 == 0)
-                output.WriteLine("t={0:0.0}s queue={1} max={2} underruns={3} overruns={4} dropped={5} adjustment={6:0}ppm",
+                sample.Value.OverrunCount != previousOverruns || sample.Value.DroppedFrames != previousDrops ||
+                sample.Value.DiscontinuityCount != previousDiscontinuities;
+            if (changed || index % 100 == 0)
+                output.WriteLine("t={0:0.000}s queue={1} max={2} underruns={3} overruns={4} dropped={5} discontinuities={6} adjustment={7:0.0}ppm",
                     sample.Elapsed.TotalSeconds, sample.Value.CurrentQueueFrames, sample.Value.MaximumQueueFrames,
                     sample.Value.UnderrunCount, sample.Value.OverrunCount, sample.Value.DroppedFrames,
-                    sample.Value.AppliedRateAdjustment);
+                    sample.Value.DiscontinuityCount, sample.Value.AppliedRateAdjustment);
             previousUnderruns = sample.Value.UnderrunCount;
             previousOverruns = sample.Value.OverrunCount;
             previousDrops = sample.Value.DroppedFrames;
+            previousDiscontinuities = sample.Value.DiscontinuityCount;
         }
+        var queueMinimum = samples.Min(sample => sample.Value.CurrentQueueFrames);
+        var queueMaximum = samples.Max(sample => sample.Value.CurrentQueueFrames);
+        var adjustments = samples
+            .Where(sample => sample.Value.AppliedRateAdjustment.HasValue)
+            .Select(sample => sample.Value.AppliedRateAdjustment!.Value)
+            .ToArray();
+        var adjustmentMinimum = adjustments.Length == 0 ? (double?)null : adjustments.Min();
+        var adjustmentMaximum = adjustments.Length == 0 ? (double?)null : adjustments.Max();
+        output.WriteLine("Observed queue range={0}..{1} frames; rate-adjustment range={2:0.0}..{3:0.0} ppm",
+            queueMinimum, queueMaximum, adjustmentMinimum, adjustmentMaximum);
+        output.WriteLine("Discontinuity observations: {0}", discontinuityObservations.Count == 0
+            ? "none"
+            : string.Join(", ", discontinuityObservations.Select(observation =>
+                $"t={observation.Elapsed.TotalSeconds:0.000}s count={observation.Count}")));
         output.WriteLine(
             "Path={0}; format={1}; periods={2}/{3}; buffers={4}/{5}; queue={6} max={7}; captured={8}; rendered={9}; silent={10}; underruns={11}; overruns={12}; dropped={13}; discontinuities={14}; timestampErrors={15}; adjustment={16:0}ppm",
             final.InitializationPath, final.CommonFormat, final.CapturePeriodFrames, final.RenderPeriodFrames,

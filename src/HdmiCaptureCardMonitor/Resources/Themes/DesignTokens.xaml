@@ -23,6 +23,8 @@
 
     <!-- Standard control and window dimensions. -->
     <sys:Double x:Key="ControlHeight">40</sys:Double>
+    <sys:Double x:Key="AudioSliderTrackHeight">4</sys:Double>
+    <sys:Double x:Key="AudioSliderThumbSize">16</sys:Double>
     <sys:Double x:Key="SelectorHeight">44</sys:Double>
     <sys:Double x:Key="HeaderIconSize">44</sys:Double>
     <sys:Double x:Key="HeaderGlyphSize">24</sys:Double>

@@ -15,7 +15,7 @@ internal readonly record struct AudioBufferReadResult(
 /// managed storage and never split an interleaved frame. It is intended to be
 /// owned by one audio worker servicing capture and render events.
 /// </summary>
-internal sealed class AudioFrameRingBuffer
+internal sealed class AudioFrameRingBuffer : IAudioFrameBuffer
 {
     private readonly float[] samples;
     private readonly int channelCount;
@@ -96,6 +96,9 @@ internal sealed class AudioFrameRingBuffer
         return new AudioBufferWriteResult(frameCount, dropped, dropped > 0);
     }
 
+    AudioBufferWriteResult IAudioFrameBuffer.Write(ReadOnlySpan<float> source, int frameCount, bool silent) =>
+        Write(source, frameCount, silent);
+
     internal AudioBufferReadResult Read(Span<float> destination, int requestedFrames)
     {
         _ = ValidateFrameBuffer(destination.Length, requestedFrames, nameof(destination));
@@ -121,6 +124,9 @@ internal sealed class AudioFrameRingBuffer
 
         return new AudioBufferReadResult(audioFrames, silentFrames, silentFrames > 0);
     }
+
+    AudioBufferReadResult IAudioFrameBuffer.Read(Span<float> destination, int requestedFrames) =>
+        Read(destination, requestedFrames);
 
     internal void Clear()
     {
