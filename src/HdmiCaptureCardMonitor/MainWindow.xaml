@@ -13,12 +13,20 @@
         Background="{DynamicResource WindowBackgroundBrush}"
         Foreground="{DynamicResource PrimaryTextBrush}"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
+        PreviewKeyDown="OnPreviewKeyDown"
         AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.MainWindow}">
-    <Window.InputBindings>
-        <KeyBinding Key="Escape" Command="{Binding CloseInformationDialogCommand}" />
-    </Window.InputBindings>
-
-    <Grid Margin="{StaticResource PagePadding}">
+    <Grid x:Name="RootGrid" Background="{DynamicResource WindowBackgroundBrush}">
+        <Grid.Style>
+            <Style TargetType="Grid">
+                <Setter Property="Margin" Value="{StaticResource PagePadding}" />
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding IsFullscreenPresentation}" Value="True">
+                        <Setter Property="Margin" Value="0" />
+                        <Setter Property="Background" Value="Black" />
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </Grid.Style>
         <Grid x:Name="MainContent" IsEnabled="{Binding IsMainContentEnabled}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -27,7 +35,7 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Margin="{StaticResource SectionGapBottom}">
+        <Grid x:Name="ProductHeader" Grid.Row="0" Margin="{StaticResource SectionGapBottom}" Visibility="{Binding IsWindowedChromeVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -51,7 +59,21 @@
             </StackPanel>
         </Grid>
 
-        <Border Grid.Row="1" Style="{StaticResource PreviewSurface}" Margin="{StaticResource SectionGapBottom}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.PreviewArea}">
+        <Border x:Name="PreviewFrame" Grid.Row="1" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.PreviewArea}">
+            <Border.Style>
+                <Style TargetType="Border" BasedOn="{StaticResource PreviewSurface}">
+                    <Setter Property="Margin" Value="{StaticResource SectionGapBottom}" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsFullscreenPresentation}" Value="True">
+                            <Setter Property="Margin" Value="0" />
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="BorderThickness" Value="0" />
+                            <Setter Property="CornerRadius" Value="0" />
+                            <Setter Property="Background" Value="Black" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
             <Grid>
                 <controls:HwndPreviewSurface x:Name="PreviewHost" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Focusable="False" />
                 <StackPanel MaxWidth="{StaticResource PreviewMessageMaxWidth}" Margin="{StaticResource PreviewContentPadding}" HorizontalAlignment="Center" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite">
@@ -70,7 +92,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" Style="{StaticResource Card}" Margin="{StaticResource CardToStatusGap}">
+        <Border x:Name="ConfigurationCard" Grid.Row="2" Style="{StaticResource Card}" Margin="{StaticResource CardToStatusGap}" Visibility="{Binding IsWindowedChromeVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -146,10 +168,10 @@
                     </StackPanel>
                     <StackPanel x:Name="ActionButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                         <Button x:Name="StartStopButton" Content="{Binding StartStopAccessText}" Command="{Binding TogglePreviewCommand}" Style="{StaticResource PrimaryButton}" Margin="{StaticResource ControlGapRight}" VerticalAlignment="Bottom" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.StartStopPreview}" />
+                        <Button x:Name="FullscreenButton" Content="{Binding FullscreenAccessText}" Command="{Binding ToggleFullscreenCommand}" IsEnabled="{Binding CanToggleFullscreen}" Style="{StaticResource SecondaryButton}" Margin="{StaticResource ControlGapRight}" VerticalAlignment="Bottom" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.Fullscreen}" ToolTip="Enter or exit fullscreen monitor mode (F11)" />
                         <StackPanel x:Name="UpcomingActions">
                             <TextBlock Text="UPCOMING" Style="{StaticResource FieldLabel}" HorizontalAlignment="Stretch" TextAlignment="Center" />
                             <WrapPanel>
-                                <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource UpcomingButton}" Margin="{StaticResource ControlGapRight}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.FullscreenUpcoming}" ToolTip="Upcoming feature" />
                                 <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource UpcomingButton}" Margin="{StaticResource ControlGapRight}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.SnapshotUpcoming}" ToolTip="Upcoming feature" />
                                 <Button Content="Record" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.RecordUpcoming}" ToolTip="Upcoming feature" />
                             </WrapPanel>
@@ -159,7 +181,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="3" Style="{StaticResource StatusBar}" AutomationProperties.LiveSetting="Polite">
+        <Border x:Name="LifecycleStatusBar" Grid.Row="3" Style="{StaticResource StatusBar}" Visibility="{Binding IsWindowedChromeVisible, Converter={StaticResource BooleanToVisibilityConverter}}" AutomationProperties.LiveSetting="Polite">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

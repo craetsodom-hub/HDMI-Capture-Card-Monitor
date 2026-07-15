@@ -7,7 +7,9 @@ using System.Windows.Threading;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Presentation;
+using HdmiCaptureCardMonitor.Presentation.Fullscreen;
 using HdmiCaptureCardMonitor.ViewModels;
+using Microsoft.Win32;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Dwm;
@@ -16,21 +18,40 @@ namespace HdmiCaptureCardMonitor;
 
 public partial class MainWindow : Window, IDisposable
 {
+    private readonly IApplicationLogger logger;
     private readonly MainWindowViewModel viewModel;
+    private readonly FullscreenWindowController fullscreenController;
+    private readonly FullscreenCursorController fullscreenCursorController;
     private IInputElement? focusBeforeDialog;
+    private bool closePreparationRunning;
+    private bool closePreparationComplete;
     private bool isDisposed;
 
     public MainWindow(IApplicationLogger logger, ICaptureDeviceDiscoveryService discoveryService, ICapturePreviewService previewService, string? startupNotice = null)
     {
+        this.logger = logger;
         InitializeComponent();
         ClampInitialSizeToWorkArea();
-        viewModel = new MainWindowViewModel(logger, startupNotice, discoveryService: discoveryService, previewService: previewService, previewSurface: PreviewHost);
+        var nativeApi = new WindowNativeApi();
+        fullscreenController = new FullscreenWindowController(new WpfFullscreenWindowAdapter(this, nativeApi, ApplyNativeTitleBarTheme));
+        fullscreenCursorController = new FullscreenCursorController(new DispatcherFullscreenInactivityTimer(Dispatcher), PreviewHost);
+        viewModel = new MainWindowViewModel(
+            logger,
+            startupNotice,
+            discoveryService: discoveryService,
+            previewService: previewService,
+            previewSurface: PreviewHost,
+            fullscreenController: fullscreenController);
         DataContext = viewModel;
         viewModel.PropertyChanging += OnViewModelPropertyChanging;
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
         Loaded += OnLoaded;
-        SizeChanged += (_, _) => ApplyResponsiveLayout(ActualWidth);
+        SizeChanged += OnWindowSizeChanged;
         StateChanged += (_, _) => PreviewHost.SetWindowMinimized(WindowState == WindowState.Minimized);
+        PreviewHost.PointerActivity += OnPreviewPointerActivity;
+        MouseMove += OnWindowPointerActivity;
+        fullscreenController.StateChanged += OnFullscreenStateChanged;
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         SourceInitialized += OnSourceInitialized;
         Closing += OnClosing;
         Closed += OnClosed;
@@ -41,9 +62,16 @@ public partial class MainWindow : Window, IDisposable
         _ = sender;
         _ = e;
 
+        ApplyNativeTitleBarTheme();
+    }
+
+    private unsafe void ApplyNativeTitleBarTheme()
+    {
+
         try
         {
             var handle = new WindowInteropHelper(this).Handle;
+            if (handle == 0) return;
             BOOL useDarkMode = ApplicationThemeManager.CurrentTheme == ApplicationTheme.Dark;
             _ = PInvoke.DwmSetWindowAttribute(
                 new HWND((void*)handle),
@@ -84,6 +112,8 @@ public partial class MainWindow : Window, IDisposable
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         _ = sender;
+        if (e.PropertyName == nameof(MainWindowViewModel.SessionState) && viewModel.SessionState != Models.CaptureSessionState.Previewing)
+            fullscreenCursorController.RestoreForFailure();
         if (e.PropertyName != nameof(MainWindowViewModel.IsInformationDialogOpen)) return;
 
         var dialogOpen = viewModel.IsInformationDialogOpen;
@@ -104,6 +134,89 @@ public partial class MainWindow : Window, IDisposable
         if (TryFocus(DeviceSelector)) return;
         if (TryFocus(StartStopButton)) return;
         _ = TryFocus(SettingsButton);
+    }
+
+    private async void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        _ = sender;
+        try
+        {
+            if (e.Key == Key.F11)
+            {
+                e.Handled = true;
+                if (viewModel.ToggleFullscreenCommand.CanExecute(null))
+                    await viewModel.ToggleFullscreenCommand.ExecuteAsync(null);
+                return;
+            }
+
+            if (e.Key != Key.Escape) return;
+            if (viewModel.IsFullscreen || viewModel.IsFullscreenTransitioning)
+            {
+                e.Handled = true;
+                await viewModel.ExitFullscreenForWindowAsync(FullscreenExitReason.Escape);
+                return;
+            }
+
+            if (viewModel.IsInformationDialogOpen)
+            {
+                e.Handled = true;
+                viewModel.CloseInformationDialogCommand.Execute(null);
+            }
+        }
+        catch (Exception exception)
+        {
+            try { logger.LogError("A keyboard fullscreen request failed safely.", exception); }
+            catch { }
+        }
+    }
+
+    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        if (!viewModel.IsFullscreenPresentation) ApplyResponsiveLayout(ActualWidth);
+    }
+
+    private void OnPreviewPointerActivity(object? sender, EventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        fullscreenCursorController.NotifyPointerActivity();
+    }
+
+    private void OnWindowPointerActivity(object sender, MouseEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        fullscreenCursorController.NotifyPointerActivity();
+    }
+
+    private void OnFullscreenStateChanged(object? sender, FullscreenControllerStateChangedEventArgs e)
+    {
+        _ = sender;
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(() => OnFullscreenStateChanged(sender, e));
+            return;
+        }
+
+        fullscreenCursorController.SetTransitioning(e.IsTransitioning);
+        if (e.IsFullscreen && !e.IsTransitioning && viewModel.SessionState == Models.CaptureSessionState.Previewing)
+            fullscreenCursorController.EnterFullscreenPreview();
+        else if (!e.IsFullscreen)
+            fullscreenCursorController.ExitFullscreen();
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        if (isDisposed) return;
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(async () =>
+        {
+            try { await viewModel.ExitFullscreenForWindowAsync(FullscreenExitReason.DisplayRemoved); }
+            catch { fullscreenCursorController.RestoreForFailure(); }
+        }));
     }
 
     private static bool TryFocus(IInputElement? candidate) => candidate switch
@@ -130,11 +243,28 @@ public partial class MainWindow : Window, IDisposable
         ActionButtons.HorizontalAlignment = stacked ? HorizontalAlignment.Left : HorizontalAlignment.Right;
     }
 
-    private void OnClosing(object? sender, CancelEventArgs e)
+    private async void OnClosing(object? sender, CancelEventArgs e)
     {
         _ = sender;
-        _ = e;
-        Dispose();
+        if (closePreparationComplete)
+        {
+            Dispose();
+            return;
+        }
+
+        e.Cancel = true;
+        if (closePreparationRunning) return;
+        closePreparationRunning = true;
+        viewModel.SetWindowClosing();
+        fullscreenCursorController.ExitFullscreen();
+        try { await viewModel.ExitFullscreenForWindowAsync(FullscreenExitReason.Closing); }
+        catch { }
+        finally
+        {
+            closePreparationComplete = true;
+            closePreparationRunning = false;
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(Close));
+        }
     }
 
     private void OnClosed(object? sender, EventArgs e)
@@ -150,7 +280,14 @@ public partial class MainWindow : Window, IDisposable
         isDisposed = true;
         viewModel.PropertyChanging -= OnViewModelPropertyChanging;
         viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        SizeChanged -= OnWindowSizeChanged;
+        PreviewHost.PointerActivity -= OnPreviewPointerActivity;
+        MouseMove -= OnWindowPointerActivity;
+        fullscreenController.StateChanged -= OnFullscreenStateChanged;
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        fullscreenCursorController.Dispose();
         viewModel.Dispose();
+        fullscreenController.DisposeAsync().AsTask().GetAwaiter().GetResult();
         GC.SuppressFinalize(this);
     }
 }

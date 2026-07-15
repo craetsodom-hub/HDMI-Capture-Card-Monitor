@@ -1,23 +1,29 @@
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Capture.Rendering;
 using HdmiCaptureCardMonitor.Models;
+using HdmiCaptureCardMonitor.Presentation.Fullscreen;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace HdmiCaptureCardMonitor.Controls;
 
-public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
+public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface, IFullscreenCursorSink
 {
     private nint childWindow;
     private PreviewSurfaceSize pixelSize;
     private bool videoVisible;
     private bool windowMinimized;
     private bool lastPublishedPresentability;
+    private bool fullscreenCursorHidden;
+
+    private const int WmSetCursor = 0x0020;
+    private const int WmMouseMove = 0x0200;
 
     internal static WINDOW_STYLE ChildWindowStyle =>
         WINDOW_STYLE.WS_CHILD | WINDOW_STYLE.WS_CLIPSIBLINGS | WINDOW_STYLE.WS_CLIPCHILDREN;
@@ -31,6 +37,7 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
     public event EventHandler<PreviewSurfaceSize>? PixelSizeChanged;
     public event EventHandler? AvailabilityChanged;
     public event EventHandler? PresentabilityChanged;
+    public event EventHandler? PointerActivity;
 
     public void SetSurfaceActive(bool active)
     {
@@ -69,6 +76,19 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
         windowMinimized = minimized;
         ApplyNativeVisibility();
         PublishPresentabilityIfChanged();
+    }
+
+    public void SetFullscreenCursorHidden(bool hidden)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(() => SetFullscreenCursorHidden(hidden));
+            return;
+        }
+
+        fullscreenCursorHidden = hidden;
+        if (hidden) _ = PInvoke.SetCursor(default);
+        else Mouse.UpdateCursor();
     }
 
     protected override unsafe HandleRef BuildWindowCore(HandleRef hwndParent)
@@ -121,6 +141,23 @@ public sealed unsafe class HwndPreviewSurface : HwndHost, IPreviewSurface
         // WPF may show an HwndHost child again while arranging it. Preserve the
         // stable HWND but immediately re-hide it until the first frame is ready.
         if (childWindow != 0 && !videoVisible) ApplyNativeVisibility();
+    }
+
+    protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WmMouseMove)
+        {
+            PointerActivity?.Invoke(this, EventArgs.Empty);
+            if (fullscreenCursorHidden) _ = PInvoke.SetCursor(default);
+        }
+        else if (msg == WmSetCursor && fullscreenCursorHidden)
+        {
+            _ = PInvoke.SetCursor(default);
+            handled = true;
+            return IntPtr.Zero;
+        }
+
+        return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
     }
 
     private void UpdatePixelSize()

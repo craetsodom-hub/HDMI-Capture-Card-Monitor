@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
@@ -6,6 +8,7 @@ using HdmiCaptureCardMonitor.Capture.Devices;
 using HdmiCaptureCardMonitor.Capture.Preview;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Models;
+using HdmiCaptureCardMonitor.Presentation.Fullscreen;
 
 namespace HdmiCaptureCardMonitor.ViewModels;
 
@@ -16,8 +19,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ICaptureDeviceDiscoveryService discoveryService;
     private readonly ICapturePreviewService previewService;
     private readonly IPreviewSurface? previewSurface;
+    private readonly IFullscreenWindowController? fullscreenController;
     private readonly SynchronizationContext? uiContext;
-    private readonly bool laterFeaturesAvailable;
     private readonly object previewOperationSync = new();
     private readonly HashSet<Guid> retiredPreviewSessions = [];
     private CancellationTokenSource? deviceScanCancellation;
@@ -29,6 +32,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private Guid activePreviewSessionId;
     private Task formatDiscoveryCompletion = Task.CompletedTask;
     private Task? previewStopOperation;
+    private bool hasPresentedFrame;
+    private bool windowClosing;
     private bool disposed;
 
     public ObservableCollection<CaptureDevice> Devices { get; } = [];
@@ -53,7 +58,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public string SessionStateDisplay => GetSessionStateDisplay(SessionState);
     public bool IsPreviewActive => SessionState is CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping;
     public bool IsMainContentEnabled => !IsInformationDialogOpen;
-    public bool CanOpenInformationDialog => !IsInformationDialogOpen;
+    public bool CanOpenInformationDialog => !IsInformationDialogOpen && !IsFullscreenPresentation && !IsFullscreenTransitioning && !windowClosing;
     public bool CanChangeCaptureSelection => !IsInformationDialogOpen && !IsPreviewActive && !IsDeviceScanRunning && !IsFormatScanRunning;
     public bool HasDevices => Devices.Count > 0 && CanChangeCaptureSelection;
     public bool HasFormats => Formats.Count > 0 && CanChangeCaptureSelection;
@@ -84,9 +89,27 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         CaptureSessionState.Stopping => "Stopping…",
         _ => "_Start"
     };
-    public bool CanFullscreen => laterFeaturesAvailable;
-    public bool CanTakeSnapshot => laterFeaturesAvailable;
-    public bool CanRecord => laterFeaturesAvailable;
+    public bool IsFullscreen => fullscreenController?.IsFullscreen == true;
+    public bool IsFullscreenTransitioning => fullscreenController?.IsTransitioning == true;
+    public bool IsFullscreenPresentation => IsFullscreen;
+    public bool IsWindowedChromeVisible => !IsFullscreenPresentation;
+    public bool CanToggleFullscreen =>
+        fullscreenController is not null &&
+        !disposed &&
+        !windowClosing &&
+        !IsFullscreenTransitioning &&
+        (IsFullscreen ||
+         (SessionState == CaptureSessionState.Previewing &&
+          hasPresentedFrame &&
+          !IsInformationDialogOpen &&
+          previewSurface?.IsAvailable == true &&
+          previewSurface.IsPresentable));
+    public bool CanFullscreen => CanToggleFullscreen;
+    public string FullscreenAccessText => IsFullscreen ? "Exit fullscreen" : "_Fullscreen";
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "This remains an instance-bound MVVM contract for a deferred command.")]
+    public bool CanTakeSnapshot => false;
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "This remains an instance-bound MVVM contract for a deferred command.")]
+    public bool CanRecord => false;
     public string PreviewControlHint => SessionState switch
     {
         CaptureSessionState.Starting => "Preparing the GPU preview.",
@@ -112,20 +135,22 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ICaptureDeviceDiscoveryService? discoveryService = null,
         ICapturePreviewService? previewService = null,
         IPreviewSurface? previewSurface = null,
+        IFullscreenWindowController? fullscreenController = null,
         SynchronizationContext? synchronizationContext = null)
     {
         this.logger = logger;
         this.discoveryService = discoveryService ?? new UnavailableCaptureDeviceDiscoveryService("Video device discovery is unavailable.");
         this.previewService = previewService ?? new UnavailableCapturePreviewService(new PreviewFailure(PreviewFailureCategory.DeviceUnavailable, "Live preview is unavailable."));
         this.previewSurface = previewSurface;
+        this.fullscreenController = fullscreenController;
         this.stateMachine = stateMachine ?? new CaptureSessionStateMachine();
-        laterFeaturesAvailable = false;
         uiContext = synchronizationContext ?? SynchronizationContext.Current;
         this.stateMachine.StateChanged += OnStateChanged;
         this.previewService.IsActiveChanged += OnPreviewServiceIsActiveChanged;
         this.previewService.FirstFramePresented += OnFirstFramePresented;
         this.previewService.DiagnosticsUpdated += OnDiagnosticsUpdated;
         this.previewService.PreviewFailed += OnPreviewFailed;
+        if (this.fullscreenController is not null) this.fullscreenController.StateChanged += OnFullscreenControllerStateChanged;
         if (this.previewSurface is not null)
         {
             this.previewSurface.AvailabilityChanged += OnSurfaceAvailabilityChanged;
@@ -138,6 +163,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     internal Task RefreshDevicesForTestingAsync() => RefreshDevicesAsync();
     internal Task StartPreviewForTestingAsync() => StartPreviewAsync();
     internal Task StopPreviewForTestingAsync() => StopPreviewAsync();
+    internal Guid ActivePreviewSessionId => activePreviewSessionId;
+    internal nint PreviewSurfaceHandle => previewSurface?.Handle ?? 0;
 
     [RelayCommand(CanExecute = nameof(CanRefreshDevices))]
     private async Task RefreshDevicesAsync()
@@ -321,8 +348,51 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanStartStopPreview))]
     private async Task TogglePreviewAsync()
     {
-        if (SessionState == CaptureSessionState.Previewing) await StopPreviewAsync();
+        if (SessionState == CaptureSessionState.Previewing)
+        {
+            await StopPreviewAsync();
+        }
         else await StartPreviewAsync();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanToggleFullscreen))]
+    private async Task ToggleFullscreenAsync()
+    {
+        if (fullscreenController is null || disposed || windowClosing || IsFullscreenTransitioning) return;
+        var entering = !IsFullscreen;
+        var started = Stopwatch.GetTimestamp();
+        SafeLogInformation(
+            $"Fullscreen {(entering ? "entry" : "exit")} requested for preview session {activePreviewSessionId:N} " +
+            $"and surface HWND 0x{PreviewSurfaceHandle:X}.");
+        FullscreenTransitionResult result;
+        try
+        {
+            result = entering
+                ? await fullscreenController.EnterAsync()
+                : await fullscreenController.ExitAsync(FullscreenExitReason.User);
+        }
+        catch (Exception exception)
+        {
+            result = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(exception));
+        }
+
+        ApplyFullscreenTransitionResult(result, showFailureMessage: true);
+        SafeLogInformation(
+            $"Fullscreen {(entering ? "entry" : "exit")} completed in " +
+            $"{Stopwatch.GetElapsedTime(started).TotalMilliseconds:0.0} ms with {result.Disposition}; " +
+            $"preview session {activePreviewSessionId:N}, surface HWND 0x{PreviewSurfaceHandle:X}.");
+    }
+
+    internal async Task ExitFullscreenForWindowAsync(FullscreenExitReason reason)
+    {
+        await ExitFullscreenPresentationAsync(reason, showFailureMessage: false);
+    }
+
+    internal void SetWindowClosing()
+    {
+        if (windowClosing) return;
+        windowClosing = true;
+        NotifyFullscreenProperties();
     }
 
     private async Task StartPreviewAsync()
@@ -334,6 +404,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         previous?.Cancel();
         previous?.Dispose();
         activePreviewSessionId = Guid.Empty;
+        hasPresentedFrame = false;
         CurrentPreviewDiagnostics = null;
         IsPreviewMessageVisible = true;
         TryTransition(CaptureSessionState.Starting);
@@ -383,13 +454,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (activePreviewSessionId == Guid.Empty) activePreviewSessionId = result.SessionId;
     }
 
-    private Task StopPreviewAsync()
+    private async Task StopPreviewAsync()
     {
+        await ExitFullscreenPresentationAsync(FullscreenExitReason.Stop, showFailureMessage: false);
+        Task operation;
         lock (previewOperationSync)
         {
-            if (disposed || SessionState is not (CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping)) return Task.CompletedTask;
-            return previewStopOperation ??= StopPreviewAndResetAsync();
+            if (disposed || SessionState is not (CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping)) return;
+            operation = previewStopOperation ??= StopPreviewAndResetAsync();
         }
+        await operation;
     }
 
     private async Task StopPreviewAndResetAsync()
@@ -401,6 +475,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private async Task StopPreviewCoreAsync()
     {
         var generation = Interlocked.Increment(ref previewGeneration);
+        hasPresentedFrame = false;
+        NotifyFullscreenProperties();
         var cancellation = Interlocked.Exchange(ref previewCancellation, null);
         cancellation?.Cancel();
         cancellation?.Dispose();
@@ -450,8 +526,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         InformationDialogEyebrow = "HELP";
         InformationDialogTitle = "Start a live monitor preview";
-        InformationDialogDescription = "Connect a compatible video capture device, select Refresh, choose the device and one of its native formats, then select Start. Select Stop before unplugging the device when possible.";
-        InformationDialogDetails = "If access is denied, enable camera access for desktop apps in Windows Privacy & security. Close other camera applications if the device is busy. Generic UVC preview has been validated; physical USB HDMI capture-card compatibility remains a required release test.";
+        InformationDialogDescription = "Connect a compatible video capture device, select Refresh, choose the device and one of its native formats, then select Start. Fullscreen requires an active live preview.";
+        InformationDialogDetails = "Press F11 to enter or exit fullscreen monitor mode, or press Escape to leave fullscreen. Capture remains active while the window changes presentation. If access is denied, enable camera access for desktop apps in Windows Privacy & security. Physical USB HDMI capture-card compatibility remains a required release test.";
         IsInformationDialogOpen = true;
     }
 
@@ -462,6 +538,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (disposed) return;
         disposed = true;
+        hasPresentedFrame = false;
+        windowClosing = true;
         UpdatePreviewSurfacePresentation();
         Interlocked.Increment(ref deviceScanGeneration);
         Interlocked.Increment(ref formatScanGeneration);
@@ -470,6 +548,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         previewService.DiagnosticsUpdated -= OnDiagnosticsUpdated;
         previewService.PreviewFailed -= OnPreviewFailed;
         previewService.IsActiveChanged -= OnPreviewServiceIsActiveChanged;
+        if (fullscreenController is not null) fullscreenController.StateChanged -= OnFullscreenControllerStateChanged;
         if (previewSurface is not null)
         {
             previewSurface.AvailabilityChanged -= OnSurfaceAvailabilityChanged;
@@ -493,6 +572,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (IsRetiredPreviewSession(e.SessionId)) return;
         if (activePreviewSessionId != Guid.Empty && activePreviewSessionId != e.SessionId) return;
         activePreviewSessionId = e.SessionId;
+        hasPresentedFrame = true;
         IsPreviewMessageVisible = false;
         TryTransition(CaptureSessionState.Previewing);
         StatusMessage = "Previewing live video.";
@@ -508,19 +588,36 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void OnPreviewFailed(object? sender, PreviewFailureEventArgs e) => PostToUi(() =>
     {
-        if (disposed || IsDeviceScanRunning || IsRetiredPreviewSession(e.SessionId)) return;
-        if (SessionState is not (CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping)) return;
-        // Startup failures are returned by StartAsync after that session's cleanup.
-        // Runtime events are accepted only for the session already bound here, so a
-        // queued event from an older Starting session cannot fault a newer attempt.
-        if (activePreviewSessionId == Guid.Empty || activePreviewSessionId != e.SessionId) return;
-        var generation = Interlocked.Increment(ref previewGeneration);
-        activePreviewSessionId = e.SessionId;
-        IsPreviewMessageVisible = true;
-        ApplyPreviewFailureMessage(e.Failure);
-        TryTransition(CaptureSessionState.Faulted);
-        _ = CleanupFailedPreviewAsync(e.SessionId, generation);
+        _ = HandleRuntimePreviewFailureAsync(e);
     });
+
+    private async Task HandleRuntimePreviewFailureAsync(PreviewFailureEventArgs e)
+    {
+        try
+        {
+            if (disposed || IsDeviceScanRunning || IsRetiredPreviewSession(e.SessionId)) return;
+            if (SessionState is not (CaptureSessionState.Starting or CaptureSessionState.Previewing or CaptureSessionState.Stopping)) return;
+            // Startup failures are returned by StartAsync after that session's cleanup.
+            // Runtime events are accepted only for the session already bound here, so a
+            // queued event from an older Starting session cannot fault a newer attempt.
+            if (activePreviewSessionId == Guid.Empty || activePreviewSessionId != e.SessionId) return;
+
+            await ExitFullscreenPresentationAsync(FullscreenExitReason.PreviewFailure, showFailureMessage: false);
+            if (disposed || activePreviewSessionId != e.SessionId) return;
+
+            var generation = Interlocked.Increment(ref previewGeneration);
+            activePreviewSessionId = e.SessionId;
+            hasPresentedFrame = false;
+            IsPreviewMessageVisible = true;
+            ApplyPreviewFailureMessage(e.Failure);
+            TryTransition(CaptureSessionState.Faulted);
+            await CleanupFailedPreviewAsync(e.SessionId, generation);
+        }
+        catch (Exception exception)
+        {
+            SafeLogError("Preview failure handling completed with a contained exception.", exception);
+        }
+    }
 
     private async Task CleanupFailedPreviewAsync(Guid failedSessionId, int generation)
     {
@@ -566,6 +663,40 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             NotifyCaptureProperties();
             UpdatePreviewSurfacePresentation();
         });
+    }
+
+    private void OnFullscreenControllerStateChanged(object? sender, FullscreenControllerStateChangedEventArgs e)
+    {
+        _ = sender;
+        _ = e;
+        PostToUi(NotifyFullscreenProperties);
+    }
+
+    private async Task ExitFullscreenPresentationAsync(FullscreenExitReason reason, bool showFailureMessage)
+    {
+        if (fullscreenController is null || (!fullscreenController.IsFullscreen && !fullscreenController.IsTransitioning)) return;
+        var started = Stopwatch.GetTimestamp();
+        SafeLogInformation(
+            $"Fullscreen exit ({reason}) requested for preview session {activePreviewSessionId:N} " +
+            $"and surface HWND 0x{PreviewSurfaceHandle:X}.");
+        FullscreenTransitionResult result;
+        try { result = await fullscreenController.ExitAsync(reason); }
+        catch (Exception exception) { result = FullscreenTransitionResult.Failed(FullscreenFailure.Unexpected(exception)); }
+        ApplyFullscreenTransitionResult(result, showFailureMessage);
+        SafeLogInformation(
+            $"Fullscreen exit ({reason}) completed in {Stopwatch.GetElapsedTime(started).TotalMilliseconds:0.0} ms " +
+            $"with {result.Disposition}; preview session {activePreviewSessionId:N}, " +
+            $"surface HWND 0x{PreviewSurfaceHandle:X}.");
+    }
+
+    private void ApplyFullscreenTransitionResult(FullscreenTransitionResult result, bool showFailureMessage)
+    {
+        if (!result.IsSuccess && result.Failure is not null)
+        {
+            SafeLogError(result.Failure.TechnicalMessage, result.Failure.Exception ?? new InvalidOperationException(result.Failure.TechnicalMessage));
+            if (showFailureMessage) StatusMessage = result.Failure.CustomerMessage;
+        }
+        NotifyFullscreenProperties();
     }
 
     private void PostToUi(Action action)
@@ -624,8 +755,31 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(StartStopText));
         OnPropertyChanged(nameof(StartStopAccessText));
         OnPropertyChanged(nameof(PreviewControlHint));
+        NotifyFullscreenProperties();
         RefreshDevicesCommand.NotifyCanExecuteChanged();
         TogglePreviewCommand.NotifyCanExecuteChanged();
+    }
+
+    private void SafeLogInformation(string message)
+    {
+        try { logger.Information(message); }
+        catch (Exception) { }
+    }
+
+    private void NotifyFullscreenProperties()
+    {
+        OnPropertyChanged(nameof(IsFullscreen));
+        OnPropertyChanged(nameof(IsFullscreenTransitioning));
+        OnPropertyChanged(nameof(IsFullscreenPresentation));
+        OnPropertyChanged(nameof(IsWindowedChromeVisible));
+        OnPropertyChanged(nameof(CanToggleFullscreen));
+        OnPropertyChanged(nameof(CanFullscreen));
+        OnPropertyChanged(nameof(FullscreenAccessText));
+        OnPropertyChanged(nameof(CanOpenInformationDialog));
+        OnPropertyChanged(nameof(IsMainContentEnabled));
+        ToggleFullscreenCommand.NotifyCanExecuteChanged();
+        ShowSettingsInformationCommand.NotifyCanExecuteChanged();
+        ShowHelpInformationCommand.NotifyCanExecuteChanged();
     }
 
     private void ApplySelectDeviceState()

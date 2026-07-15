@@ -10,7 +10,7 @@ public static class UiAutomationLabels
     public const string StartStopPreview = "Start or stop live preview";
     public const string Settings = "Settings information";
     public const string Help = "Help";
-    public const string FullscreenUpcoming = "Fullscreen, upcoming feature";
+    public const string Fullscreen = "Toggle fullscreen monitor mode";
     public const string SnapshotUpcoming = "Snapshot, upcoming feature";
     public const string RecordUpcoming = "Record, upcoming feature";
 }

@@ -51,6 +51,22 @@ SetWindowPos
 DwmSetWindowAttribute
 DWMWINDOWATTRIBUTE
 
+// Phase 4: borderless fullscreen presentation and exact native placement restore.
+GetWindowPlacement
+SetWindowPlacement
+MonitorFromWindow
+GetMonitorInfo
+GetWindowLongPtr
+SetWindowLongPtr
+GetDpiForWindow
+SetCursor
+LoadCursor
+WINDOWPLACEMENT
+MONITORINFO
+MONITOR_FROM_FLAGS
+SET_WINDOW_POS_FLAGS
+HWND_TOP
+
 // Phase 2A: synchronous Source Reader and D3D manager.
 MFCreateDXGIDeviceManager
 IMFDXGIDeviceManager
