@@ -128,7 +128,7 @@
                         <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{DynamicResource FocusBrush}" /><Setter TargetName="ButtonBorder" Property="BorderThickness" Value="2" /></Trigger>
                         <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ButtonBorder" Property="Opacity" Value="0.90" /></Trigger>
                         <Trigger Property="IsPressed" Value="True"><Setter TargetName="ButtonBorder" Property="Opacity" Value="0.78" /></Trigger>
-                        <Trigger Property="IsEnabled" Value="False"><Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" /><Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" /><Setter TargetName="ButtonBorder" Property="Opacity" Value="1" /></Trigger>
+                        <Trigger Property="IsEnabled" Value="False"><Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" /><Setter TargetName="ButtonBorder" Property="BorderBrush" Value="{DynamicResource DisabledBorderBrush}" /><Setter Property="Foreground" Value="{DynamicResource DisabledTextBrush}" /><Setter TargetName="ButtonBorder" Property="Opacity" Value="1" /></Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
@@ -150,6 +150,18 @@
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
         <Setter Property="MinWidth" Value="76" />
+        <Style.Triggers>
+            <MultiTrigger>
+                <MultiTrigger.Conditions><Condition Property="IsMouseOver" Value="True" /><Condition Property="IsEnabled" Value="True" /></MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource SurfaceSecondaryBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions><Condition Property="IsPressed" Value="True" /><Condition Property="IsEnabled" Value="True" /></MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            </MultiTrigger>
+        </Style.Triggers>
     </Style>
     <Style x:Key="UpcomingButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
         <Setter Property="Background" Value="{DynamicResource DisabledSurfaceBrush}" />

@@ -18,6 +18,7 @@
     <Color x:Key="DangerColor">#FFC9343E</Color>
     <Color x:Key="DisabledSurfaceColor">#FFE9EDF3</Color>
     <Color x:Key="DisabledTextColor">#FF747E8E</Color>
+    <Color x:Key="DisabledBorderColor">#FFC8D0DC</Color>
     <SolidColorBrush x:Key="WindowBackgroundBrush" Color="{StaticResource WindowBackgroundColor}" />
     <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}" />
     <SolidColorBrush x:Key="SurfaceSecondaryBrush" Color="{StaticResource SurfaceSecondaryColor}" />
@@ -36,4 +37,5 @@
     <SolidColorBrush x:Key="DangerBrush" Color="{StaticResource DangerColor}" />
     <SolidColorBrush x:Key="DisabledSurfaceBrush" Color="{StaticResource DisabledSurfaceColor}" />
     <SolidColorBrush x:Key="DisabledTextBrush" Color="{StaticResource DisabledTextColor}" />
+    <SolidColorBrush x:Key="DisabledBorderBrush" Color="{StaticResource DisabledBorderColor}" />
 </ResourceDictionary>

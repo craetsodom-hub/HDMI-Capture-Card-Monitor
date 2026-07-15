@@ -2,11 +2,15 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using HdmiCaptureCardMonitor.Capture.Abstractions;
 using HdmiCaptureCardMonitor.Infrastructure;
 using HdmiCaptureCardMonitor.Presentation;
 using HdmiCaptureCardMonitor.ViewModels;
+using Windows.Win32;
+using Windows.Win32.Foundation;
+using Windows.Win32.Graphics.Dwm;
 
 namespace HdmiCaptureCardMonitor;
 
@@ -27,8 +31,30 @@ public partial class MainWindow : Window, IDisposable
         Loaded += OnLoaded;
         SizeChanged += (_, _) => ApplyResponsiveLayout(ActualWidth);
         StateChanged += (_, _) => PreviewHost.SetWindowMinimized(WindowState == WindowState.Minimized);
+        SourceInitialized += OnSourceInitialized;
         Closing += OnClosing;
         Closed += OnClosed;
+    }
+
+    private unsafe void OnSourceInitialized(object? sender, EventArgs e)
+    {
+        _ = sender;
+        _ = e;
+
+        try
+        {
+            var handle = new WindowInteropHelper(this).Handle;
+            BOOL useDarkMode = ApplicationThemeManager.CurrentTheme == ApplicationTheme.Dark;
+            _ = PInvoke.DwmSetWindowAttribute(
+                new HWND((void*)handle),
+                DWMWINDOWATTRIBUTE.DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &useDarkMode,
+                (uint)sizeof(BOOL));
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+        {
+            // Native title-bar theming is optional and must never prevent startup.
+        }
     }
 
     private void ClampInitialSizeToWorkArea()

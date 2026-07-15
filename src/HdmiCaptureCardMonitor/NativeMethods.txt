@@ -47,6 +47,10 @@ DestroyWindow
 ShowWindow
 SetWindowPos
 
+// Phase 3: documented DWM title-bar theme integration.
+DwmSetWindowAttribute
+DWMWINDOWATTRIBUTE
+
 // Phase 2A: synchronous Source Reader and D3D manager.
 MFCreateDXGIDeviceManager
 IMFDXGIDeviceManager

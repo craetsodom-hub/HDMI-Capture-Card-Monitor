@@ -144,8 +144,8 @@
                     </StackPanel>
                     <StackPanel x:Name="ActionButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                         <Button x:Name="StartStopButton" Content="{Binding StartStopAccessText}" Command="{Binding TogglePreviewCommand}" Style="{StaticResource PrimaryButton}" VerticalAlignment="Bottom" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.StartStopPreview}" />
-                        <StackPanel>
-                            <TextBlock Text="UPCOMING" Style="{StaticResource FieldLabel}" Margin="0,0,0,4" HorizontalAlignment="Left" />
+                        <StackPanel x:Name="UpcomingActions">
+                            <TextBlock Text="UPCOMING" Style="{StaticResource FieldLabel}" Margin="0,0,8,4" HorizontalAlignment="Stretch" TextAlignment="Center" />
                             <WrapPanel>
                                 <Button Content="Fullscreen" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.FullscreenUpcoming}" ToolTip="Upcoming feature" />
                                 <Button Content="Snapshot" IsEnabled="False" Style="{StaticResource UpcomingButton}" AutomationProperties.Name="{x:Static presentation:UiAutomationLabels.SnapshotUpcoming}" ToolTip="Upcoming feature" />

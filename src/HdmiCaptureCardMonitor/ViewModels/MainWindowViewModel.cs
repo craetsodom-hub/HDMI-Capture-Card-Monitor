@@ -58,7 +58,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public bool HasDevices => Devices.Count > 0 && CanChangeCaptureSelection;
     public bool HasFormats => Formats.Count > 0 && CanChangeCaptureSelection;
     public bool CanRefreshDevices => !IsInformationDialogOpen && !IsDeviceScanRunning && !IsPreviewActive;
-    public string DevicePlaceholder => IsDeviceScanRunning ? "No device available" : Devices.Count > 0 ? "Select a capture device" : "No device available";
+    public string DevicePlaceholder => IsDeviceScanRunning ? "Scanning for video devices…" : Devices.Count > 0 ? "Select a capture device" : "No device available";
     public string FormatPlaceholder => SelectedDevice is null ? "Select a device first" : IsFormatScanRunning ? "Reading supported formats…" : Formats.Count > 0 ? "Select a native format" : "No native formats available";
     public bool CanStartCapture =>
         SessionState == CaptureSessionState.DeviceReady &&

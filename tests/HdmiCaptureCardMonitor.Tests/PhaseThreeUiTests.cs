@@ -13,7 +13,7 @@ public sealed class PhaseThreeUiTests
         "WindowBackgroundBrush", "SurfaceBrush", "SurfaceSecondaryBrush", "PreviewBrush",
         "PrimaryTextBrush", "MutedTextBrush", "AccentBrush", "BorderBrush", "FocusBrush",
         "StatusIdleBrush", "SuccessBrush", "WarningBrush", "DangerBrush",
-        "DisabledSurfaceBrush", "DisabledTextBrush"
+        "DisabledSurfaceBrush", "DisabledTextBrush", "DisabledBorderBrush"
     ];
 
     [Theory]
@@ -145,18 +145,95 @@ public sealed class PhaseThreeUiTests
             string.Equals((string?)element.Attribute(x + "Name"), "MainContent", StringComparison.Ordinal));
 
         Assert.Equal("{Binding IsMainContentEnabled}", (string?)mainContent.Attribute("IsEnabled"));
-        Assert.Contains(window.Descendants(), element =>
+        var upcomingActions = window.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute(x + "Name"), "UpcomingActions", StringComparison.Ordinal));
+        var upcomingLabel = upcomingActions.Elements().Single(element =>
             element.Name.LocalName == "TextBlock" &&
             string.Equals((string?)element.Attribute("Text"), "UPCOMING", StringComparison.Ordinal));
+
+        Assert.Equal("Center", (string?)upcomingLabel.Attribute("TextAlignment"));
+        Assert.Equal(3, upcomingActions.Descendants().Count(element => element.Name.LocalName == "Button"));
         Assert.Contains(window.Descendants(), element =>
             element.Name.LocalName == "Border" &&
             string.Equals((string?)element.Attribute("KeyboardNavigation.TabNavigation"), "Cycle", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void DisabledPrimaryButtonOverridesItsAccentBorder()
+    {
+        var controls = LoadTheme("Resources/Themes/Controls.xaml");
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var baseButton = FindStyle(controls, x, "BaseButton");
+        var primaryButton = FindStyle(controls, x, "PrimaryButton");
+        var disabledTrigger = baseButton.Descendants().Single(element =>
+            element.Name.LocalName == "Trigger" &&
+            string.Equals((string?)element.Attribute("Property"), "IsEnabled", StringComparison.Ordinal) &&
+            string.Equals((string?)element.Attribute("Value"), "False", StringComparison.Ordinal));
+
+        Assert.Contains(primaryButton.Elements(), element =>
+            IsSetter(element, "BorderBrush", "{DynamicResource AccentBrush}"));
+        Assert.Contains(disabledTrigger.Elements(), element =>
+            IsSetter(element, "BorderBrush", "{DynamicResource DisabledBorderBrush}") &&
+            string.Equals((string?)element.Attribute("TargetName"), "ButtonBorder", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void QuietButtonDeclaresEnabledHoverAndPressedStates()
+    {
+        var controls = LoadTheme("Resources/Themes/Controls.xaml");
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var quietButton = FindStyle(controls, x, "QuietButton");
+        var multiTriggers = quietButton.Descendants().Where(element => element.Name.LocalName == "MultiTrigger").ToArray();
+
+        Assert.Contains(multiTriggers, trigger =>
+            HasConditions(trigger, ("IsMouseOver", "True"), ("IsEnabled", "True")) &&
+            trigger.Elements().Any(element => IsSetter(element, "Background", "{DynamicResource SurfaceSecondaryBrush}")) &&
+            trigger.Elements().Any(element => IsSetter(element, "Foreground", "{DynamicResource PrimaryTextBrush}")));
+        Assert.Contains(multiTriggers, trigger =>
+            HasConditions(trigger, ("IsPressed", "True"), ("IsEnabled", "True")) &&
+            trigger.Elements().Any(element => IsSetter(element, "Background", "{DynamicResource DisabledSurfaceBrush}")));
+    }
+
+    [Fact]
+    public void TitleBarThemeIntegrationUsesGeneratedDocumentedDwmAttribute()
+    {
+        var root = FindRepositoryRoot();
+        var nativeMethods = File.ReadAllText(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "NativeMethods.txt"));
+        var windowCode = File.ReadAllText(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", "MainWindow.xaml.cs"));
+        var currentTheme = typeof(ApplicationThemeManager).GetProperty(
+            nameof(ApplicationThemeManager.CurrentTheme),
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+
+        Assert.Contains("DwmSetWindowAttribute", nativeMethods, StringComparison.Ordinal);
+        Assert.Contains("DWMWINDOWATTRIBUTE", nativeMethods, StringComparison.Ordinal);
+        Assert.Contains("DWMWINDOWATTRIBUTE.DWMWA_USE_IMMERSIVE_DARK_MODE", windowCode, StringComparison.Ordinal);
+        Assert.NotNull(currentTheme);
+        Assert.NotNull(currentTheme.GetMethod);
+        Assert.False(currentTheme.SetMethod?.IsPublic ?? false);
     }
 
     private static XDocument LoadTheme(string path)
     {
         var root = FindRepositoryRoot();
         return XDocument.Load(Path.Combine(root.FullName, "src", "HdmiCaptureCardMonitor", path.Replace('/', Path.DirectorySeparatorChar)));
+    }
+
+    private static XElement FindStyle(XDocument document, XNamespace x, string key) =>
+        document.Descendants().Single(element =>
+            element.Name.LocalName == "Style" &&
+            string.Equals((string?)element.Attribute(x + "Key"), key, StringComparison.Ordinal));
+
+    private static bool IsSetter(XElement element, string property, string value) =>
+        element.Name.LocalName == "Setter" &&
+        string.Equals((string?)element.Attribute("Property"), property, StringComparison.Ordinal) &&
+        string.Equals((string?)element.Attribute("Value"), value, StringComparison.Ordinal);
+
+    private static bool HasConditions(XElement trigger, params (string Property, string Value)[] expected)
+    {
+        var conditions = trigger.Descendants().Where(element => element.Name.LocalName == "Condition").ToArray();
+        return expected.All(item => conditions.Any(condition =>
+            string.Equals((string?)condition.Attribute("Property"), item.Property, StringComparison.Ordinal) &&
+            string.Equals((string?)condition.Attribute("Value"), item.Value, StringComparison.Ordinal)));
     }
 
     private static Color ColorValue(XDocument dictionary, string key)

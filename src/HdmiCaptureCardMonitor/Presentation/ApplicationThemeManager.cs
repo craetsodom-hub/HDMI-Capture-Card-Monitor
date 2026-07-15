@@ -9,6 +9,7 @@ internal static class ApplicationThemeManager
 {
     internal const string LightThemePath = "Resources/Themes/Light.xaml";
     internal const string DarkThemePath = "Resources/Themes/Dark.xaml";
+    internal static ApplicationTheme CurrentTheme { get; private set; } = ApplicationTheme.Light;
 
     internal static ApplicationTheme DetectPreferredTheme()
     {
@@ -29,20 +30,24 @@ internal static class ApplicationThemeManager
     internal static void ApplyPreferredTheme(ResourceDictionary resources)
     {
         ArgumentNullException.ThrowIfNull(resources);
+        var appliedTheme = DetectPreferredTheme();
         var dictionaries = resources.MergedDictionaries;
         var existing = dictionaries.FirstOrDefault(IsColorThemeDictionary);
         var replacement = new ResourceDictionary
         {
-            Source = new Uri(DetectPreferredTheme() == ApplicationTheme.Dark ? DarkThemePath : LightThemePath, UriKind.Relative)
+            Source = new Uri(appliedTheme == ApplicationTheme.Dark ? DarkThemePath : LightThemePath, UriKind.Relative)
         };
 
         if (existing is null)
         {
             dictionaries.Insert(Math.Min(1, dictionaries.Count), replacement);
-            return;
+        }
+        else
+        {
+            dictionaries[dictionaries.IndexOf(existing)] = replacement;
         }
 
-        dictionaries[dictionaries.IndexOf(existing)] = replacement;
+        CurrentTheme = appliedTheme;
     }
 
     private static bool IsColorThemeDictionary(ResourceDictionary dictionary)

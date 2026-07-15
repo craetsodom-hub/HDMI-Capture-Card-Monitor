@@ -95,6 +95,27 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public void DevicePlaceholderDistinguishesScanningSelectionAndNoDeviceStates()
+    {
+        var viewModel = new MainWindowViewModel(NullApplicationLogger.Instance);
+
+        viewModel.IsDeviceScanRunning = true;
+        Assert.Equal("Scanning for video devices…", viewModel.DevicePlaceholder);
+
+        viewModel.IsDeviceScanRunning = false;
+        viewModel.Devices.Add(new CaptureDevice(
+            "opaque-test-device",
+            "Test Camera",
+            "Test Camera",
+            true,
+            CaptureBackend.MediaFoundation));
+        Assert.Equal("Select a capture device", viewModel.DevicePlaceholder);
+
+        viewModel.Devices.Clear();
+        Assert.Equal("No device available", viewModel.DevicePlaceholder);
+    }
+
+    [Fact]
     public void SettingsAndHelpCommandsProvideHonestNonPhaseGuidance()
     {
         const string lifecycleStatus = "No compatible video capture devices found.";
