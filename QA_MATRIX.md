@@ -53,3 +53,17 @@ Hardware rows are completed only when the named configuration was genuinely exer
 | Informational panels | Settings exposes no fake controls; Help explains the preview path, camera permission, busy-device recovery, and USB HDMI validation boundary | Automated content checks and manual active-preview access-key/focus/Escape review executed |
 | Device release | Windows Camera acquisition after Stop and after application close | Executed successfully with HD Camera |
 | Physical USB HDMI | HDMI compatibility, no-signal behavior, capture-card disconnect, and HDMI latency | Outstanding; mandatory before Microsoft Store release |
+
+## Phase 4 evidence
+
+| Category | Current evidence | Status |
+|---|---|---|
+| Automated fullscreen | Eligibility, transition generations, 30 drift-free controller cycles, priority exit, rollback/fallback, exact/maximized placement, signed monitor coordinates, capture/session/HWND continuity, lifecycle ordering, fullscreen layout, and deterministic cursor inactivity | 297 ordinary tests executed successfully without hardware |
+| Existing preview architecture | One MainWindow, one HwndPreviewSurface child, one active session, and the Phase 2A renderer remain authoritative; fullscreen has no capture Start/Stop or renegotiation path | Source and unit-test guarded |
+| HD Camera fullscreen | Session `4080b0b664ab426086f25400ad21a09a` and child HWND `0xCA0B10` persisted through 30 F11 cycles, 20 rapid F11/Escape alternations, resize/maximize restore, minimize, and a 613.3-second fullscreen run; 10.0 received/rendered fps afterward; no warnings, presentation failures, or D3D removal | Executed successfully with 1280 × 720 NV12; no 30-fps delivery claim |
+| Placement and timing | Resized native bounds `130,66–1143,846` restored exactly; maximized `showCmd=3` and the same normal bounds restored; 108 logged transitions ranged 43.5–301.4 ms, average 74.5 ms | Executed successfully without visible drift or off-screen placement |
+| Cursor and lifecycle | Cursor hidden after inactivity (`CURSOR_SHOWING` clear), restored on exit; Alt+Tab and 10.5-second minimize/restore recovered to 10.0/10.0 fps; close from fullscreen restored in 99.5 ms and completed shutdown | Executed successfully; automatic Stop/failure order remains deterministic-test evidence because fullscreen intentionally exposes no overlaid Stop control |
+| Device release | Windows Camera acquired HD Camera after Stop and after fullscreen application close; close diagnostics recorded 1,456 received / 1,456 rendered and zero presentation failures | Executed successfully |
+| Display and theme | Dark/light themes and live fullscreen at 100%, 150%, and 200% scaling | Executed successfully on one 2160 × 1440 display; secondary and negative-coordinate physical-monitor validation unavailable |
+| Safely induced failures | Fullscreen rollback, safe fallback, runtime preview failure, Stop, display-change, and disposal-during-entry | Deterministic tests executed; no real preview failure or monitor removal was deliberately forced |
+| Physical USB HDMI | HDMI compatibility, no-signal behavior, disconnect semantics, and HDMI latency | Outstanding; mandatory before Microsoft Store release |

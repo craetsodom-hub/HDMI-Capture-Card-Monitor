@@ -75,7 +75,7 @@ public sealed class PhaseThreeUiTests
             UiAutomationLabels.DeviceSelector, UiAutomationLabels.FormatSelector,
             UiAutomationLabels.RefreshDevices, UiAutomationLabels.StartStopPreview,
             UiAutomationLabels.Settings, UiAutomationLabels.Help,
-            UiAutomationLabels.FullscreenUpcoming, UiAutomationLabels.SnapshotUpcoming,
+            UiAutomationLabels.Fullscreen, UiAutomationLabels.SnapshotUpcoming,
             UiAutomationLabels.RecordUpcoming
         ];
 
@@ -153,7 +153,7 @@ public sealed class PhaseThreeUiTests
             string.Equals((string?)element.Attribute("Text"), "UPCOMING", StringComparison.Ordinal));
 
         Assert.Equal("Center", (string?)upcomingLabel.Attribute("TextAlignment"));
-        Assert.Equal(3, upcomingActions.Descendants().Count(element => element.Name.LocalName == "Button"));
+        Assert.Equal(2, upcomingActions.Descendants().Count(element => element.Name.LocalName == "Button"));
         Assert.Contains(window.Descendants(), element =>
             element.Name.LocalName == "Border" &&
             string.Equals((string?)element.Attribute("KeyboardNavigation.TabNavigation"), "Cycle", StringComparison.Ordinal));
@@ -287,15 +287,19 @@ public sealed class PhaseThreeUiTests
         var rows = mainContent.Elements().Single(element => element.Name.LocalName == "Grid.RowDefinitions").Elements().ToArray();
         var start = window.Descendants().Single(element =>
             string.Equals((string?)element.Attribute(x + "Name"), "StartStopButton", StringComparison.Ordinal));
+        var fullscreen = window.Descendants().Single(element =>
+            string.Equals((string?)element.Attribute(x + "Name"), "FullscreenButton", StringComparison.Ordinal));
         var upcoming = window.Descendants().Single(element =>
             string.Equals((string?)element.Attribute(x + "Name"), "UpcomingActions", StringComparison.Ordinal));
         var futureButtons = upcoming.Descendants().Where(element => element.Name.LocalName == "Button").ToArray();
 
         Assert.Equal("*", (string?)rows[1].Attribute("Height"));
         Assert.Equal("{StaticResource PreviewMinimumHeight}", (string?)rows[1].Attribute("MinHeight"));
-        Assert.Equal(3, futureButtons.Length);
+        Assert.Equal(2, futureButtons.Length);
         Assert.All(futureButtons, button => Assert.Equal("False", (string?)button.Attribute("IsEnabled")));
         Assert.DoesNotContain(start, upcoming.Descendants());
+        Assert.DoesNotContain(fullscreen, upcoming.Descendants());
+        Assert.Equal("{Binding CanToggleFullscreen}", (string?)fullscreen.Attribute("IsEnabled"));
     }
 
     [Fact]
@@ -307,7 +311,7 @@ public sealed class PhaseThreeUiTests
         var actionWidth = LayoutMetrics.PrimaryButtonMinimumWidth +
                           LayoutMetrics.ControlGap +
                           (3 * LayoutMetrics.StandardButtonMinimumWidth) +
-                          (2 * LayoutMetrics.ControlGap);
+                          (3 * LayoutMetrics.ControlGap);
 
         Assert.True(innerCardWidth >= actionWidth);
         Assert.True(ResponsiveLayoutPolicy.UsesStackedSelectors(LayoutMetrics.MinimumWindowWidth));

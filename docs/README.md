@@ -7,3 +7,4 @@ Phase-specific design and validation records:
 - `PHASE_1_DEVICE_ENUMERATION.md`
 - `PHASE_2_LOW_LATENCY_PREVIEW.md`
 - `PHASE_3_PREMIUM_UI.md`
+- `PHASE_4_FULLSCREEN_MONITOR_MODE.md`
