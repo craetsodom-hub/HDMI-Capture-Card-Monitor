@@ -45,7 +45,12 @@ internal readonly record struct AudioCaptureBatchResult(
     ulong LastQpcPosition,
     bool HasPacket);
 
-internal readonly record struct AudioRenderPacketResult(bool Rendered, int Frames, int SilentFrames);
+internal readonly record struct AudioRenderPacketResult(
+    bool Rendered,
+    int Frames,
+    int SilentFrames,
+    int LiveFrames = 0,
+    uint PaddingFrames = 0);
 
 internal static class AudioNativeBufferProcessor
 {
@@ -53,7 +58,8 @@ internal static class AudioNativeBufferProcessor
         IAudioCaptureBufferAccess access,
         IAudioFrameBuffer ring,
         AudioStreamFormat format,
-        Action<AudioCapturePacket, int, int>? discontinuityObserved = null)
+        Action<AudioCapturePacket, int, int>? discontinuityObserved = null,
+        Action<int>? packetFrameCountObserved = null)
     {
         long captured = 0;
         long silentFrames = 0;
@@ -71,6 +77,7 @@ internal static class AudioNativeBufferProcessor
             try
             {
                 var count = checked((int)packet.FrameCount);
+                packetFrameCountObserved?.Invoke(count);
                 if (count == 0)
                 {
                     packetFrames = access.GetNextPacketSize();
@@ -171,16 +178,12 @@ internal static class AudioNativeBufferProcessor
         IAudioFrameBuffer ring,
         AudioStreamFormat format,
         IAudioGainProcessor gain,
-        uint bufferFrames,
-        int renderPeriodFrames)
+        uint bufferFrames)
     {
         var padding = access.GetCurrentPadding();
         if (padding >= bufferFrames) return default;
         var available = bufferFrames - padding;
-        var period = checked((uint)Math.Max(1, renderPeriodFrames));
-        if (available < period) return default;
-
-        available = period;
+        if (available == 0) return default;
         var data = access.GetBuffer(available);
         var releaseFlags = (uint)_AUDCLNT_BUFFERFLAGS.AUDCLNT_BUFFERFLAGS_SILENT;
         try
@@ -195,7 +198,8 @@ internal static class AudioNativeBufferProcessor
             var result = ring.Read(samples, frameCount);
             gain.Process(samples, frameCount, format.ChannelCount);
             releaseFlags = 0;
-            return new AudioRenderPacketResult(true, frameCount, result.SilentFrames);
+            return new AudioRenderPacketResult(
+                true, frameCount, result.SilentFrames, result.AudioFrames, padding);
         }
         catch (Exception exception) when (exception is not AudioSessionException)
         {

@@ -13,16 +13,23 @@ internal sealed class WasapiAudioMonitorService : IAudioMonitorService
     public WasapiAudioMonitorService(IApplicationLogger logger) : this(logger, true) { }
 
     internal WasapiAudioMonitorService(IApplicationLogger logger, bool preferAudioClient3) :
-        this(logger, preferAudioClient3, 2) { }
+        this(logger, preferAudioClient3, 2, true) { }
 
     internal WasapiAudioMonitorService(
         IApplicationLogger logger,
         bool preferAudioClient3,
-        int targetQueuePeriods)
+        int targetQueuePeriods) :
+        this(logger, preferAudioClient3, targetQueuePeriods, true) { }
+
+    internal WasapiAudioMonitorService(
+        IApplicationLogger logger,
+        bool preferAudioClient3,
+        int targetQueuePeriods,
+        bool enableRateAdjustment)
     {
         this.logger = logger;
         sessionFactory = request => new WasapiAudioMonitorSession(
-            request, logger, preferAudioClient3, targetQueuePeriods);
+            request, logger, preferAudioClient3, targetQueuePeriods, enableRateAdjustment);
     }
 
     internal WasapiAudioMonitorService(

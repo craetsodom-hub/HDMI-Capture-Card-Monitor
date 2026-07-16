@@ -116,7 +116,7 @@ public sealed class AudioNativeSafetyTests
         var format = AudioStreamFormat.CreateIeeeFloat(48_000, 2);
 
         var error = Assert.Throws<AudioSessionException>(() => AudioNativeBufferProcessor.ProcessRender(
-            access, new RecordingFrameBuffer(), format, new RecordingGain(), uint.MaxValue, int.MaxValue));
+            access, new RecordingFrameBuffer(), format, new RecordingGain(), uint.MaxValue));
         Assert.Equal(AudioMonitorFailureCategory.BufferFailure, error.Category);
 
         Assert.Equal(1, access.ReleaseCalls);
@@ -131,13 +131,60 @@ public sealed class AudioNativeSafetyTests
         var ring = new RecordingFrameBuffer();
         var gain = new RecordingGain();
 
-        var result = AudioNativeBufferProcessor.ProcessRender(access, ring, Stereo, gain, 4, 4);
+        var result = AudioNativeBufferProcessor.ProcessRender(access, ring, Stereo, gain, 4);
 
         Assert.True(result.Rendered);
         Assert.Equal(1, access.ReleaseCalls);
         Assert.Equal(0u, access.LastReleaseFlags);
         Assert.Equal(1, ring.ReadCalls);
         Assert.Equal(1, gain.Calls);
+    }
+
+    [Theory]
+    [InlineData(960u, 480u, 480)]
+    [InlineData(1440u, 480u, 960)]
+    [InlineData(2238u, 96u, 2142)]
+    public void RenderFillsEveryFrameAvailableFromNativeBuffer(uint bufferFrames, uint padding, int expected)
+    {
+        using var memory = new UnmanagedAudioBuffer(checked(expected * 2 * sizeof(float)));
+        var access = new FakeRenderAccess(memory.Pointer, bufferFrames, padding);
+
+        var result = AudioNativeBufferProcessor.ProcessRender(
+            access, new RecordingFrameBuffer(), Stereo, new RecordingGain(), bufferFrames);
+
+        Assert.Equal(expected, result.Frames);
+        Assert.Equal((uint)expected, access.LastRequestedFrames);
+        Assert.Equal((uint)expected, access.LastReleasedFrames);
+        Assert.Equal(1, access.ReleaseCalls);
+    }
+
+    [Fact]
+    public void RenderUsesLiveFramesAndSilencesOnlyMissingTail()
+    {
+        using var memory = new UnmanagedAudioBuffer(960 * 2 * sizeof(float));
+        var access = new FakeRenderAccess(memory.Pointer, 1440, 480);
+        var ring = new RecordingFrameBuffer { AvailableLiveFrames = 600 };
+
+        var result = AudioNativeBufferProcessor.ProcessRender(
+            access, ring, Stereo, new RecordingGain(), 1440);
+
+        Assert.Equal(960, result.Frames);
+        Assert.Equal(600, result.LiveFrames);
+        Assert.Equal(360, result.SilentFrames);
+    }
+
+    [Fact]
+    public void RenderWithCompleteLivePacketInsertsNoSilence()
+    {
+        using var memory = new UnmanagedAudioBuffer(960 * 2 * sizeof(float));
+        var result = AudioNativeBufferProcessor.ProcessRender(
+            new FakeRenderAccess(memory.Pointer, 960, 0),
+            new RecordingFrameBuffer { AvailableLiveFrames = 960 },
+            Stereo,
+            new RecordingGain(),
+            960);
+        Assert.Equal(960, result.LiveFrames);
+        Assert.Equal(0, result.SilentFrames);
     }
 
     [Fact]
@@ -160,7 +207,7 @@ public sealed class AudioNativeSafetyTests
         var access = new FakeRenderAccess(memory.Pointer, 4, 0);
 
         var error = Assert.Throws<AudioSessionException>(() =>
-            AudioNativeBufferProcessor.ProcessRender(access, ring, Stereo, gain, 4, 4));
+            AudioNativeBufferProcessor.ProcessRender(access, ring, Stereo, gain, 4));
         Assert.Equal(AudioMonitorFailureCategory.BufferFailure, error.Category);
 
         Assert.Equal(1, access.ReleaseCalls);
@@ -180,15 +227,18 @@ public sealed class AudioNativeSafetyTests
     {
         public int ReleaseCalls { get; private set; }
         public uint LastReleaseFlags { get; private set; }
+        public uint LastRequestedFrames { get; private set; }
+        public uint LastReleasedFrames { get; private set; }
         public uint GetCurrentPadding() => padding;
-        public nint GetBuffer(uint frameCount) { Assert.True(frameCount <= bufferFrames); return pointer; }
-        public void ReleaseBuffer(uint frameCount, uint flags) { _ = frameCount; ReleaseCalls++; LastReleaseFlags = flags; }
+        public nint GetBuffer(uint frameCount) { Assert.True(frameCount <= bufferFrames); LastRequestedFrames = frameCount; return pointer; }
+        public void ReleaseBuffer(uint frameCount, uint flags) { LastReleasedFrames = frameCount; ReleaseCalls++; LastReleaseFlags = flags; }
     }
 
     private sealed class RecordingFrameBuffer : IAudioFrameBuffer
     {
         public Exception? WriteFailure { get; init; }
         public Exception? ReadFailure { get; init; }
+        public int? AvailableLiveFrames { get; init; }
         public int WriteCalls { get; private set; }
         public int ReadCalls { get; private set; }
         public int WrittenFrames { get; private set; }
@@ -210,8 +260,9 @@ public sealed class AudioNativeSafetyTests
         {
             ReadCalls++;
             if (ReadFailure is not null) throw ReadFailure;
+            var live = Math.Min(requestedFrames, AvailableLiveFrames ?? requestedFrames);
             destination.Clear();
-            return new AudioBufferReadResult(requestedFrames, 0, false);
+            return new AudioBufferReadResult(live, requestedFrames - live, live < requestedFrames);
         }
     }
 

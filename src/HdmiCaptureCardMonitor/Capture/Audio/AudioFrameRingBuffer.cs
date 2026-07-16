@@ -3,12 +3,14 @@ namespace HdmiCaptureCardMonitor.Capture.Audio;
 internal readonly record struct AudioBufferWriteResult(
     int WrittenFrames,
     int DroppedFrames,
-    bool OverrunOccurred);
+    bool OverrunOccurred,
+    int PhysicalCapacityDroppedFrames = 0);
 
 internal readonly record struct AudioBufferReadResult(
     int AudioFrames,
     int SilentFrames,
-    bool UnderrunOccurred);
+    bool UnderrunOccurred,
+    int LatencyTrimmedFrames = 0);
 
 /// <summary>
 /// Preallocated complete-frame circular buffer. Packet operations allocate no

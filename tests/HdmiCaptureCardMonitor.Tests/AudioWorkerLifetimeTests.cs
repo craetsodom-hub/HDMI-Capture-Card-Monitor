@@ -8,6 +8,14 @@ public sealed class AudioWorkerLifetimeTests
     private static readonly AudioEndpoint Capture = new("opaque-capture", "Test microphone", AudioEndpointDataFlow.Capture);
 
     [Fact]
+    public Task BlockedCaptureWorkerRetainsOwnershipUntilPacketLoopExits() =>
+        VerifyBlockedPacketWorkerLifetimeAsync("Audio capture packet worker test");
+
+    [Fact]
+    public Task BlockedRenderWorkerRetainsOwnershipUntilPacketLoopExits() =>
+        VerifyBlockedPacketWorkerLifetimeAsync("Audio render packet worker test");
+
+    [Fact]
     public async Task QueueControllerSettlesInsideStopTimeout()
     {
         using var controller = new AudioQueueRateController(
@@ -299,6 +307,40 @@ public sealed class AudioWorkerLifetimeTests
     private static void WaitUntil(Func<bool> predicate)
     {
         Assert.True(SpinWait.SpinUntil(predicate, TimeSpan.FromSeconds(1)));
+    }
+
+    private static async Task VerifyBlockedPacketWorkerLifetimeAsync(string name)
+    {
+        using var stop = new EventWaitHandle(false, EventResetMode.ManualReset);
+        using var stopHandle = new Microsoft.Win32.SafeHandles.SafeFileHandle(
+            stop.SafeWaitHandle.DangerousGetHandle(), ownsHandle: false);
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var worker = new BlockingPacketWorker(name, stopHandle, entered, release);
+
+        Assert.True(worker.StartAndWaitReady(TimeSpan.FromSeconds(1)));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+        stop.Set();
+        Assert.False(worker.Completion.Wait(TimeSpan.FromMilliseconds(20)));
+        Assert.False(worker.HandlesReleased);
+
+        release.Set();
+        await worker.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+        worker.Dispose();
+        Assert.True(worker.HandlesReleased);
+    }
+
+    private sealed class BlockingPacketWorker(
+        string name,
+        Microsoft.Win32.SafeHandles.SafeFileHandle stopEvent,
+        ManualResetEventSlim entered,
+        ManualResetEventSlim release) : AudioPacketWorker(name, stopEvent)
+    {
+        protected override void RunPacketLoop()
+        {
+            entered.Set();
+            release.Wait();
+        }
     }
 
     private sealed class ControlledControllerSession : IAudioMonitorSession

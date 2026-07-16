@@ -40,8 +40,10 @@ public sealed class AudioHardwareIntegrationTests
         var targetPeriods = int.TryParse(Environment.GetEnvironmentVariable("HDMI_AUDIO_QUEUE_TARGET_PERIODS"), out var configuredTarget)
             ? Math.Clamp(configuredTarget, 2, 3)
             : 2;
+        var enableRateAdjustment = string.Equals(
+            Environment.GetEnvironmentVariable("HDMI_AUDIO_RATE_ADJUSTMENT"), "1", StringComparison.Ordinal);
         using var service = new WasapiAudioMonitorService(
-            NullApplicationLogger.Instance, preferAudioClient3, targetPeriods);
+            NullApplicationLogger.Instance, preferAudioClient3, targetPeriods, enableRateAdjustment);
         var diagnostics = new ConcurrentQueue<(TimeSpan Elapsed, AudioMonitorDiagnostics Value)>();
         var clock = Stopwatch.StartNew();
         service.DiagnosticsUpdated += (_, e) => diagnostics.Enqueue((clock.Elapsed, e.Diagnostics));
@@ -50,7 +52,7 @@ public sealed class AudioHardwareIntegrationTests
         service.SetMuted(false);
         service.SetMuted(true);
         var seconds = int.TryParse(Environment.GetEnvironmentVariable("HDMI_AUDIO_HARDWARE_SECONDS"), out var configured)
-            ? Math.Clamp(configured, 2, 900)
+            ? Math.Clamp(configured, 2, 1800)
             : 10;
         await Task.Delay(TimeSpan.FromSeconds(seconds));
         var stop = await service.StopAsync();
@@ -101,6 +103,25 @@ public sealed class AudioHardwareIntegrationTests
             targetPeriods, final.TargetQueueFrames, final.AverageQueueFrames,
             requestedMinimum, requestedMaximum, final.RateAdjustmentSaturationMilliseconds,
             final.RateAdjustmentDirectionChangeCount);
+        output.WriteLine("Rate adjustment enabled={0}; active={1}; estimated drift={2:0.0} ppm; activation={3} ms",
+            enableRateAdjustment, final.RateAdjustmentActive, final.EstimatedClockDriftPpm,
+            final.RateAdjustmentActivationMilliseconds);
+        output.WriteLine("Capture cadence={0:0.0} fps; render consumption={1:0.0} fps; startup silence={2}; known buffered frames={3}",
+            final.CaptureDeviceFramesPerSecond, final.RenderConsumptionFramesPerSecond,
+            final.StartupSilenceFrames, final.TotalKnownBufferedFrames);
+        output.WriteLine("Capture event ms avg/p95/max={0:0.000}/{1:0.000}/{2:0.000}; long gaps={3}; empty wakes={4}; packets={5}",
+            final.CaptureEventIntervalAverageMilliseconds, final.CaptureEventIntervalP95Milliseconds,
+            final.CaptureEventIntervalMaximumMilliseconds, final.CaptureLongGapCount,
+            final.EmptyCaptureWakeCount, FormatDistribution(final.CapturePacketFrameDistribution));
+        output.WriteLine("Render event ms avg/p95/max={0:0.000}/{1:0.000}/{2:0.000}; padding={3}; available avg/max={4:0.0}/{5}; late wakes={6}; long gaps={7}; available={8}",
+            final.RenderEventIntervalAverageMilliseconds, final.RenderEventIntervalP95Milliseconds,
+            final.RenderEventIntervalMaximumMilliseconds, final.CurrentRenderPaddingFrames,
+            final.RenderFramesAvailableAverage, final.RenderFramesAvailableMaximum,
+            final.RenderLateWakeCount, final.RenderLongGapCount,
+            FormatDistribution(final.RenderFramesAvailableDistribution));
+        output.WriteLine("Steady-state starvation={0}; native underfill={1}; physical capacity drops={2}; latency trims={3}",
+            final.RingStarvationEvents, final.NativeRenderUnderfillEvents,
+            final.PhysicalCapacityDroppedFrames, final.LatencyTrimmedFrames);
         output.WriteLine("Discontinuity observations: {0}", discontinuityObservations.Count == 0
             ? "none"
             : string.Join(", ", discontinuityObservations.Select(observation =>
@@ -126,10 +147,19 @@ public sealed class AudioHardwareIntegrationTests
         Assert.Equal(0, final.UnderrunCount);
         Assert.Equal(0, final.OverrunCount);
         Assert.Equal(0, final.DroppedFrames);
+        Assert.Equal(0, final.RingStarvationEvents);
+        Assert.Equal(0, final.NativeRenderUnderfillEvents);
+        Assert.Equal(0, final.PhysicalCapacityDroppedFrames);
+        Assert.Equal(0, final.LatencyTrimmedFrames);
         Assert.Equal(0, final.CurrentVolumePercent);
         Assert.True(final.IsMuted);
         Assert.False(service.IsActive);
     }
+
+    private static string FormatDistribution(IReadOnlyDictionary<int, long>? distribution) =>
+        distribution is null || distribution.Count == 0
+            ? "none"
+            : string.Join(", ", distribution.Select(entry => $"{entry.Key}:{entry.Value}"));
 
     [Fact]
     public async Task TwentyMutedStartStopCyclesCompleteAndReleaseEndpoints()

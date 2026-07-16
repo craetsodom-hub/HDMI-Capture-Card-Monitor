@@ -31,11 +31,18 @@ internal sealed class AudioQueueRateController : IDisposable
     private readonly TaskCompletionSource workerExited = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource startFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int queueFrames;
+    private long captureFrames;
+    private long renderFrames;
+    private long discontinuityCount;
+    private long lateRenderWakeCount;
     private long requestedPpmBits;
     private long appliedPpmBits;
+    private long estimatedDriftPpmBits;
     private long saturationTicks;
+    private long activationTicks;
     private long directionChangeCount;
     private int available;
+    private int adjustmentActive;
     private int workerStarted;
     private int stopRequested;
     private int handlesDisposed;
@@ -92,13 +99,30 @@ internal sealed class AudioQueueRateController : IDisposable
         ? BitConverter.Int64BitsToDouble(Interlocked.Read(ref appliedPpmBits))
         : null;
     internal TimeSpan SaturationDuration => TimeSpan.FromTicks(Interlocked.Read(ref saturationTicks));
+    internal TimeSpan ActivationDuration => TimeSpan.FromTicks(Interlocked.Read(ref activationTicks));
     internal long DirectionChangeCount => Interlocked.Read(ref directionChangeCount);
+    internal double? EstimatedClockDriftPpm => Volatile.Read(ref available) != 0
+        ? BitConverter.Int64BitsToDouble(Interlocked.Read(ref estimatedDriftPpmBits))
+        : null;
+    internal bool IsAdjustmentActive => Volatile.Read(ref adjustmentActive) != 0;
 
     internal bool IsAvailable => Volatile.Read(ref available) != 0;
     internal Task Completion => completion.Task;
     internal bool HandlesReleased => Volatile.Read(ref handlesDisposed) != 0;
 
-    internal void UpdateQueueDepth(int value) => Volatile.Write(ref queueFrames, value);
+    internal void UpdateObservation(
+        int queuedFrames,
+        long capturedFrames,
+        long renderedFrames,
+        long discontinuities,
+        long lateRenderWakes)
+    {
+        Volatile.Write(ref queueFrames, queuedFrames);
+        Interlocked.Exchange(ref captureFrames, capturedFrames);
+        Interlocked.Exchange(ref renderFrames, renderedFrames);
+        Interlocked.Exchange(ref discontinuityCount, discontinuities);
+        Interlocked.Exchange(ref lateRenderWakeCount, lateRenderWakes);
+    }
 
     internal bool Start()
     {
@@ -164,10 +188,18 @@ internal sealed class AudioQueueRateController : IDisposable
             var interval = TimeSpan.FromMilliseconds(ControlIntervalMilliseconds);
             while (!stopEvent.WaitOne(ControlIntervalMilliseconds))
             {
-                var decision = policy.Step(Volatile.Read(ref queueFrames), interval);
+                var decision = policy.Step(new AudioQueueRateControllerSample(
+                    Volatile.Read(ref queueFrames),
+                    Interlocked.Read(ref captureFrames),
+                    Interlocked.Read(ref renderFrames),
+                    Interlocked.Read(ref discontinuityCount),
+                    Interlocked.Read(ref lateRenderWakeCount)), interval);
                 Interlocked.Exchange(ref requestedPpmBits, BitConverter.DoubleToInt64Bits(decision.RequestedAdjustmentPpm));
+                Interlocked.Exchange(ref estimatedDriftPpmBits, BitConverter.DoubleToInt64Bits(decision.EstimatedClockDriftPpm ?? 0));
                 Interlocked.Exchange(ref saturationTicks, decision.SaturationDuration.Ticks);
+                Interlocked.Exchange(ref activationTicks, decision.ActivationDuration.Ticks);
                 Interlocked.Exchange(ref directionChangeCount, decision.DirectionChangeCount);
+                Volatile.Write(ref adjustmentActive, decision.IsAdjustmentActive ? 1 : 0);
                 if (Math.Abs(decision.AppliedAdjustmentPpm - appliedPpm) < double.Epsilon) continue;
                 var sampleRate = nominalSampleRate * (1 + decision.AppliedAdjustmentPpm / 1_000_000d);
                 activeAdjustment.SetSampleRate((float)sampleRate);
@@ -180,6 +212,7 @@ internal sealed class AudioQueueRateController : IDisposable
                 activeAdjustment.SetSampleRate((float)nominalSampleRate);
                 Interlocked.Exchange(ref requestedPpmBits, BitConverter.DoubleToInt64Bits(0));
                 Interlocked.Exchange(ref appliedPpmBits, BitConverter.DoubleToInt64Bits(0));
+                Volatile.Write(ref adjustmentActive, 0);
             }
         }
         catch (COMException exception)
