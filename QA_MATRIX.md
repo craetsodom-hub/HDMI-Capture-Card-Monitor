@@ -67,3 +67,18 @@ Hardware rows are completed only when the named configuration was genuinely exer
 | Display and theme | Dark/light themes and live fullscreen at 100%, 150%, and 200% scaling | Executed successfully on one 2160 × 1440 display; secondary and negative-coordinate physical-monitor validation unavailable |
 | Safely induced failures | Fullscreen rollback, safe fallback, runtime preview failure, Stop, display-change, and disposal-during-entry | Deterministic tests executed; no real preview failure or monitor removal was deliberately forced |
 | Physical USB HDMI | HDMI compatibility, no-signal behavior, disconnect semantics, and HDMI latency | Outstanding; mandatory before Microsoft Store release |
+
+## Phase 5 evidence
+
+| Category | Current evidence | Status |
+|---|---|---|
+| Automated audio core | 411 ordinary tests covering endpoint safety, native silent/null-pointer handling, guaranteed capture/render release, fresh-client fallback, complete-frame ring-buffer behavior, gain/mute ramps, observer isolation, bounded diagnostics publishing, unified worker lifetime/timeouts, lifecycle ordering, responsive slider/theme semantics, and repeated disposal | Executed successfully without hardware |
+| Endpoint discovery | Active Realtek microphone and speaker endpoints enumerated with safe names; opaque IDs were not displayed or logged; system-default output remains an explicit choice | Executed successfully on this Windows machine |
+| Initialization and format | Hybrid `IAudioClient3` capture/classic shared render with `RATEADJUST`; 32-bit IEEE float, 48 kHz, 2 channels; 480-frame capture/render periods; 1,056/2,238-frame native buffers | Executed successfully in a muted hardware session |
+| Buffer and drift policy | 960-frame target, 2,880-frame hard capacity, complete frames only, one-period render writes, capture-before-render combined wakes, and a non-real-time proportional controller bounded to ±3,000 ppm | Source, deterministic-test, and hardware-run guarded |
+| Historical ten-minute baseline | 28,692,672 captured; 28,791,552 rendered; 100,512 silent; 208 underruns; 1 overrun; 96 dropped | Superseded evidence that justified the bounded correction; not presented as a pass |
+| Latest ten-minute muted run | 28,766,592 captured; 28,769,760 rendered; 4,608 silent; one 9-underrun burst observed at 98.060-98.565 s; 0 overruns; 0 dropped; discontinuity count 3 observed at 1.438 s and count 5 at 51.549 s; queue range 0-2,016 frames; adjustment range -3,000 to +3,000 ppm | Cleanup completed, but the strict hardware assertion failed; retained as blocking evidence rather than a lossless claim |
+| Repeated lifecycle | Twenty muted Start/Stop cycles completed and capture/render endpoints were released after every cycle | Executed successfully |
+| Fullscreen and video ordering | Audio ownership is independent of presentation state; first real video frame precedes audio start; audio stops before video cleanup | Deterministic lifecycle tests; audible live fullscreen validation remains outstanding |
+| Audible quality | Only open laptop speakers were available; unmuted microphone-to-speaker monitoring was intentionally not attempted because of feedback risk | Blocked; no sound, crackle, gap, channel, feedback, drift, pitch, fullscreen, minimize/restore, or quality claim |
+| Physical USB HDMI | Video/audio endpoint association, HDMI audio format behavior, A/V synchronization, feedback-safe audible monitoring, no-signal/disconnect behavior, and HDMI latency | Outstanding; mandatory before Microsoft Store release |
