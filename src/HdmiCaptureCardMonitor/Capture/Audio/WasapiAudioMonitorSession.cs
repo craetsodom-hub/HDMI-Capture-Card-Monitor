@@ -17,14 +17,16 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     private const int StopTimeoutSeconds = 3;
     private const int BufferPeriodCapacity = 6;
     private const int HighWatermarkPeriods = 6;
-    private const int TargetQueuePeriods = 2;
+    private const int DefaultTargetQueuePeriods = 2;
     private const uint WaitMilliseconds = 1000;
 
     private readonly AudioMonitorStartRequest request;
     private readonly IApplicationLogger logger;
     private readonly AudioGainController gain;
     private readonly bool preferAudioClient3;
+    private readonly int targetQueuePeriods;
     private readonly Thread worker;
+    private readonly AudioControlEventPublisher controlEventPublisher;
     private readonly LatestAudioDiagnosticsPublisher diagnosticsPublisher;
     private readonly TaskCompletionSource<AudioMonitorStartResult> startup = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -36,11 +38,18 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     private int stopRequested;
     private int disposed;
 
-    internal WasapiAudioMonitorSession(AudioMonitorStartRequest request, IApplicationLogger logger, bool preferAudioClient3 = true)
+    internal WasapiAudioMonitorSession(
+        AudioMonitorStartRequest request,
+        IApplicationLogger logger,
+        bool preferAudioClient3 = true,
+        int targetQueuePeriods = DefaultTargetQueuePeriods)
     {
         this.request = request;
         this.logger = logger;
         this.preferAudioClient3 = preferAudioClient3;
+        if (targetQueuePeriods is < 2 or > 3)
+            throw new ArgumentOutOfRangeException(nameof(targetQueuePeriods), "The queue target must be two or three periods.");
+        this.targetQueuePeriods = targetQueuePeriods;
         gain = new AudioGainController();
         gain.SetVolume(request.InitialVolumePercent);
         gain.SetMuted(request.InitiallyMuted);
@@ -52,6 +61,11 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
             Priority = ThreadPriority.AboveNormal
         };
         worker.SetApartmentState(ApartmentState.MTA);
+        controlEventPublisher = new AudioControlEventPublisher(
+            args => SafeAudioEventDispatch.Publish(
+                StateChanged, this, args, this.logger, "state"),
+            args => SafeAudioEventDispatch.Publish(
+                MonitoringFailed, this, args, this.logger, "failure"));
         diagnosticsPublisher = new LatestAudioDiagnosticsPublisher(args =>
             SafeAudioEventDispatch.Publish(
                 DiagnosticsUpdated, this, args, this.logger, "diagnostics"));
@@ -69,6 +83,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     {
         if (Interlocked.Exchange(ref started, 1) != 0)
             return await startup.Task.ConfigureAwait(false);
+        controlEventPublisher.Start();
         diagnosticsPublisher.Start();
         ChangeState(AudioMonitorState.Starting);
         worker.Start();
@@ -224,7 +239,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
             var stablePeriod = Math.Max(Math.Max(capturePeriod, renderPeriod), 1);
             var capacityFrames = checked(stablePeriod * BufferPeriodCapacity);
             var highWatermark = checked(stablePeriod * HighWatermarkPeriods);
-            var startupTarget = Math.Min(checked(stablePeriod * TargetQueuePeriods), highWatermark);
+            var startupTarget = Math.Min(checked(stablePeriod * targetQueuePeriods), highWatermark);
             var ring = new AudioFrameRingBuffer(capacityFrames, managedFormat.ChannelCount, highWatermark);
             rateController = new AudioQueueRateController(
                 renderClient, logger, managedFormat.SampleRate, startupTarget, stablePeriod);
@@ -247,6 +262,19 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
             ulong lastQpcPosition = 0;
             DateTimeOffset? lastPacket = null;
             DateTimeOffset? lastRender = null;
+            long queueSampleTotal = 0;
+            long queueSampleCount = 0;
+            var discontinuityTracker = new AudioDiscontinuityTracker();
+            var sessionClock = Stopwatch.StartNew();
+            var transitionClock = new Stopwatch();
+            var discontinuityPhase = AudioDiscontinuityPhase.Startup;
+            void RecordDiscontinuity(AudioCapturePacket packet, int queueBefore, int queueAfter)
+            {
+                discontinuityTracker.Observe(
+                    sessionClock.Elapsed, packet, queueBefore, queueAfter,
+                    rateController.RequestedAdjustmentPpm, rateController.AppliedAdjustmentPpm,
+                    ring.UnderrunCount, ring.OverrunCount, discontinuityPhase);
+            }
             var diagnosticsClock = Stopwatch.StartNew();
             var startupHandles = new[] { ToHandle(localStopEvent), ToHandle(captureEvent) };
 
@@ -256,10 +284,13 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
                 if (wait == WAIT_EVENT.WAIT_OBJECT_0) break;
                 if (wait == (WAIT_EVENT)((uint)WAIT_EVENT.WAIT_OBJECT_0 + 1))
                     ProcessCapture(captureBufferAccess, ring, managedFormat, ref framesCaptured, ref silentFrames,
-                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket);
+                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket,
+                        RecordDiscontinuity);
                 else if (wait == WAIT_EVENT.WAIT_FAILED)
                     throw new AudioSessionException(AudioMonitorFailureCategory.BufferFailure, "Audio event waiting failed.");
                 rateController.UpdateQueueDepth(ring.QueuedFrames);
+                queueSampleTotal += ring.QueuedFrames;
+                queueSampleCount++;
             }
 
             if (Volatile.Read(ref stopRequested) != 0)
@@ -270,19 +301,24 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
 
             renderClient.Start();
             renderStarted = true;
+            discontinuityPhase = AudioDiscontinuityPhase.Transition;
+            transitionClock.Start();
             ChangeState(gain.IsMuted ? AudioMonitorState.Muted : AudioMonitorState.Monitoring);
             startup.TrySetResult(AudioMonitorStartResult.Started(SessionId));
             SafeInformation($"Audio monitoring started for {request.CaptureEndpoint.DisplayName} to " +
                 $"{request.RenderEndpoint?.DisplayName ?? "System default output"}; {managedFormat}; {path}; " +
                 $"periods {capturePeriod}/{renderPeriod} frames; queue capacity {capacityFrames} frames.");
 
-            // A render wake reserves one output period and then drains any capture
-            // packet already available. A capture-only wake does not render early;
+            // A render wake drains every capture packet already available before
+            // reserving one output period. A capture-only wake does not render early;
             // this prevents both fixed-priority starvation and premature silence.
             var monitoringHandles = new[] { ToHandle(localStopEvent), ToHandle(renderEvent), ToHandle(captureEvent) };
 
             while (Volatile.Read(ref stopRequested) == 0)
             {
+                if (discontinuityPhase == AudioDiscontinuityPhase.Transition &&
+                    transitionClock.Elapsed >= TimeSpan.FromSeconds(2))
+                    discontinuityPhase = AudioDiscontinuityPhase.SteadyState;
                 var wait = PInvoke.WaitForMultipleObjects(monitoringHandles, false, WaitMilliseconds);
                 if (wait == WAIT_EVENT.WAIT_OBJECT_0) break;
                 if (wait == (WAIT_EVENT)((uint)WAIT_EVENT.WAIT_OBJECT_0 + 1))
@@ -291,17 +327,23 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
                     // Drain it first so a complete packet that is ready now cannot be mistaken for
                     // an underrun merely because the render handle has the lower wait index.
                     ProcessCapture(captureBufferAccess, ring, managedFormat, ref framesCaptured, ref silentFrames,
-                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket);
+                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket,
+                        RecordDiscontinuity);
                     ProcessRender(renderBufferAccess, ring, managedFormat, gain, renderBufferFramesNative, renderPeriod,
                         ref framesRendered, ref silentFrames, ref lastRender);
                 }
                 else if (wait == (WAIT_EVENT)((uint)WAIT_EVENT.WAIT_OBJECT_0 + 2))
                     ProcessCapture(captureBufferAccess, ring, managedFormat, ref framesCaptured, ref silentFrames,
-                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket);
+                        ref discontinuities, ref timestampErrors, ref lastDevicePosition, ref lastQpcPosition, ref lastPacket,
+                        RecordDiscontinuity);
                 else if (wait == WAIT_EVENT.WAIT_FAILED)
                     throw new AudioSessionException(AudioMonitorFailureCategory.BufferFailure, "Audio event waiting failed.");
 
                 rateController.UpdateQueueDepth(ring.QueuedFrames);
+                queueSampleTotal += ring.QueuedFrames;
+                queueSampleCount++;
+                discontinuityTracker.UpdateOutcomes(
+                    sessionClock.Elapsed, ring.UnderrunCount, ring.OverrunCount);
                 if (!rateController.IsAvailable)
                     throw new AudioSessionException(AudioMonitorFailureCategory.AudioProcessingFailure,
                         "Windows audio rate adjustment became unavailable.");
@@ -309,6 +351,7 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
                 if (diagnosticsClock.ElapsedMilliseconds >= 500)
                 {
                     diagnosticsClock.Restart();
+                    var discontinuitySnapshot = discontinuityTracker.Snapshot();
                     diagnosticsPublisher.PublishLatest(new AudioMonitorDiagnosticsEventArgs(SessionId, new AudioMonitorDiagnostics(
                         SessionId,
                         request.CaptureEndpoint.DisplayName,
@@ -342,7 +385,12 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
                         LastCaptureQpcPosition: lastQpcPosition,
                         MmcssRegistered: mmcss is not null,
                         RingBufferCapacityFrames: capacityFrames,
-                        TargetQueueFrames: startupTarget)));
+                        TargetQueueFrames: startupTarget,
+                        AverageQueueFrames: queueSampleCount == 0 ? 0 : queueSampleTotal / (double)queueSampleCount,
+                        RequestedRateAdjustment: rateController.RequestedAdjustmentPpm,
+                        RateAdjustmentSaturationMilliseconds: checked((long)rateController.SaturationDuration.TotalMilliseconds),
+                        RateAdjustmentDirectionChangeCount: rateController.DirectionChangeCount,
+                        DiscontinuityTimeline: discontinuitySnapshot)));
                 }
             }
         }
@@ -351,12 +399,8 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
             var failure = CreateFailure(exception);
             ChangeState(AudioMonitorState.Faulted);
             startup.TrySetResult(AudioMonitorStartResult.Failed(SessionId, failure));
-            SafeAudioEventDispatch.Publish(
-                MonitoringFailed,
-                this,
-                new AudioMonitorFailureEventArgs(SessionId, failure),
-                logger,
-                "failure");
+            _ = controlEventPublisher.PublishFailure(
+                new AudioMonitorFailureEventArgs(SessionId, failure));
             SafeWarning($"Audio monitoring failed safely with {failure.Category}" +
                 (failure.HResult is int hresult ? $" (0x{hresult:X8})." : "."));
         }
@@ -589,9 +633,11 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
         ref long timestampErrors,
         ref ulong lastDevicePosition,
         ref ulong lastQpcPosition,
-        ref DateTimeOffset? lastPacket)
+        ref DateTimeOffset? lastPacket,
+        Action<AudioCapturePacket, int, int>? discontinuityObserved = null)
     {
-        var result = AudioNativeBufferProcessor.ProcessCapture(access, ring, format);
+        var result = AudioNativeBufferProcessor.ProcessCapture(
+            access, ring, format, discontinuityObserved);
         framesCaptured += result.FramesCaptured;
         silentFrames += result.SilentFrames;
         discontinuities += result.Discontinuities;
@@ -655,12 +701,8 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     {
         var previous = (AudioMonitorState)Interlocked.Exchange(ref state, (int)next);
         if (previous != next)
-            SafeAudioEventDispatch.Publish(
-                StateChanged,
-                this,
-                new AudioMonitorStateChangedEventArgs(SessionId, previous, next),
-                logger,
-                "state");
+            _ = controlEventPublisher.PublishState(
+                new AudioMonitorStateChangedEventArgs(SessionId, previous, next));
     }
 
     private static AudioMonitorFailure CreateFailure(Exception exception)
@@ -748,6 +790,16 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
         }
     }
 
+    private bool TryStopControlEventPublisher()
+    {
+        try { return controlEventPublisher.Stop(); }
+        catch (Exception exception)
+        {
+            SafeWarning($"Audio control-event-publisher stop failed safely ({exception.GetType().Name}).");
+            return controlEventPublisher.Completion.IsCompleted;
+        }
+    }
+
     private async Task CompleteAfterWorkersSettleAsync(
         Task controllerCompletion,
         Task publisherCompletion,
@@ -783,7 +835,23 @@ internal sealed class WasapiAudioMonitorSession : IAudioMonitorSession
     private void CompleteAuxiliaryWorkers()
     {
         if (State != AudioMonitorState.Faulted) ChangeState(AudioMonitorState.Off);
-        auxiliaryWorkersSettled.TrySetResult();
+        if (TryStopControlEventPublisher())
+            auxiliaryWorkersSettled.TrySetResult();
+        else
+            _ = CompleteAfterControlPublisherSettlesAsync();
+    }
+
+    private async Task CompleteAfterControlPublisherSettlesAsync()
+    {
+        try { await controlEventPublisher.Completion.ConfigureAwait(false); }
+        catch (Exception exception)
+        {
+            SafeWarning($"Audio control-event-publisher completion failed safely ({exception.GetType().Name}).");
+        }
+        finally
+        {
+            auxiliaryWorkersSettled.TrySetResult();
+        }
     }
 
     private void WorkerEntry()

@@ -41,6 +41,7 @@ internal sealed class AudioFrameRingBuffer : IAudioFrameBuffer
     internal int ChannelCount => channelCount;
     internal int HighWatermarkFrames => highWatermarkFrames;
     internal int QueuedFrames => queuedFrames;
+    int IAudioFrameBuffer.QueuedFrames => queuedFrames;
     internal int MaximumQueuedFrames { get; private set; }
     internal long UnderrunCount { get; private set; }
     internal long OverrunCount { get; private set; }

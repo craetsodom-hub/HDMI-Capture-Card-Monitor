@@ -6,21 +6,6 @@ using Windows.Win32.System.Com;
 
 namespace HdmiCaptureCardMonitor.Capture.Audio;
 
-internal static class AudioQueueRateControllerMath
-{
-    internal const double MaximumAdjustmentPpm = 3_000;
-    private const double AdjustmentPpmPerPeriod = 2_000;
-
-    internal static double CalculateAdjustmentPpm(int queueFrames, int targetQueueFrames, int periodFrames)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(queueFrames);
-        ArgumentOutOfRangeException.ThrowIfNegative(targetQueueFrames);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(periodFrames);
-        var errorPeriods = (queueFrames - targetQueueFrames) / (double)periodFrames;
-        return Math.Clamp(errorPeriods * AdjustmentPpmPerPeriod, -MaximumAdjustmentPpm, MaximumAdjustmentPpm);
-    }
-}
-
 /// <summary>
 /// Applies a small queue-error correction on a non-real-time MTA thread. The
 /// MMCSS packet worker publishes only the current queue depth and never calls
@@ -31,7 +16,6 @@ internal sealed class AudioQueueRateController : IDisposable
     private const int ControlIntervalMilliseconds = 500;
     private const int StartupTimeoutMilliseconds = 2_000;
     private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
-    private const double MinimumChangePpm = 50;
 
     private readonly IAudioClient? renderClient;
     private readonly IApplicationLogger logger;
@@ -44,9 +28,15 @@ internal sealed class AudioQueueRateController : IDisposable
     private readonly Action<WaitHandle>? testWorker;
     private readonly TimeSpan stopTimeout;
     private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource workerExited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource startFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int queueFrames;
+    private long requestedPpmBits;
     private long appliedPpmBits;
+    private long saturationTicks;
+    private long directionChangeCount;
     private int available;
+    private int workerStarted;
     private int stopRequested;
     private int handlesDisposed;
 
@@ -70,6 +60,7 @@ internal sealed class AudioQueueRateController : IDisposable
             Priority = ThreadPriority.BelowNormal
         };
         thread.SetApartmentState(ApartmentState.MTA);
+        _ = CompleteLifetimeAsync();
     }
 
     internal AudioQueueRateController(
@@ -91,32 +82,56 @@ internal sealed class AudioQueueRateController : IDisposable
             Priority = ThreadPriority.BelowNormal
         };
         thread.SetApartmentState(ApartmentState.MTA);
+        _ = CompleteLifetimeAsync();
     }
 
+    internal double? RequestedAdjustmentPpm => Volatile.Read(ref available) != 0
+        ? BitConverter.Int64BitsToDouble(Interlocked.Read(ref requestedPpmBits))
+        : null;
     internal double? AppliedAdjustmentPpm => Volatile.Read(ref available) != 0
         ? BitConverter.Int64BitsToDouble(Interlocked.Read(ref appliedPpmBits))
         : null;
+    internal TimeSpan SaturationDuration => TimeSpan.FromTicks(Interlocked.Read(ref saturationTicks));
+    internal long DirectionChangeCount => Interlocked.Read(ref directionChangeCount);
 
     internal bool IsAvailable => Volatile.Read(ref available) != 0;
     internal Task Completion => completion.Task;
+    internal bool HandlesReleased => Volatile.Read(ref handlesDisposed) != 0;
 
     internal void UpdateQueueDepth(int value) => Volatile.Write(ref queueFrames, value);
 
     internal bool Start()
     {
+        if (Interlocked.Exchange(ref workerStarted, 1) != 0)
+            throw new InvalidOperationException("The audio queue-rate controller can start only once.");
         thread.Start();
-        return initializedEvent.WaitOne(StartupTimeoutMilliseconds) && Volatile.Read(ref available) != 0;
+        try
+        {
+            return initializedEvent.WaitOne(StartupTimeoutMilliseconds) && Volatile.Read(ref available) != 0;
+        }
+        finally
+        {
+            startFinished.TrySetResult();
+        }
     }
 
     internal bool Stop()
     {
-        if (Interlocked.Exchange(ref stopRequested, 1) == 0) stopEvent.Set();
+        if (Interlocked.Exchange(ref stopRequested, 1) == 0)
+        {
+            try { stopEvent.Set(); }
+            catch (ObjectDisposedException) when (completion.Task.IsCompleted) { }
+        }
+        if (Volatile.Read(ref workerStarted) == 0)
+        {
+            startFinished.TrySetResult();
+            workerExited.TrySetResult();
+        }
         if (!completion.Task.Wait(stopTimeout))
         {
             SafeWarning("The audio queue-rate controller did not stop within its two-second bound.");
             return false;
         }
-        DisposeHandles();
         return true;
     }
 
@@ -144,16 +159,27 @@ internal sealed class AudioQueueRateController : IDisposable
             Volatile.Write(ref available, 1);
             initializedEvent.Set();
 
+            var policy = new AudioQueueRateControllerPolicy(targetQueueFrames, periodFrames);
             var appliedPpm = 0d;
+            var interval = TimeSpan.FromMilliseconds(ControlIntervalMilliseconds);
             while (!stopEvent.WaitOne(ControlIntervalMilliseconds))
             {
-                var requestedPpm = AudioQueueRateControllerMath.CalculateAdjustmentPpm(
-                    Volatile.Read(ref queueFrames), targetQueueFrames, periodFrames);
-                if (Math.Abs(requestedPpm - appliedPpm) < MinimumChangePpm) continue;
-                var sampleRate = nominalSampleRate * (1 + requestedPpm / 1_000_000d);
+                var decision = policy.Step(Volatile.Read(ref queueFrames), interval);
+                Interlocked.Exchange(ref requestedPpmBits, BitConverter.DoubleToInt64Bits(decision.RequestedAdjustmentPpm));
+                Interlocked.Exchange(ref saturationTicks, decision.SaturationDuration.Ticks);
+                Interlocked.Exchange(ref directionChangeCount, decision.DirectionChangeCount);
+                if (Math.Abs(decision.AppliedAdjustmentPpm - appliedPpm) < double.Epsilon) continue;
+                var sampleRate = nominalSampleRate * (1 + decision.AppliedAdjustmentPpm / 1_000_000d);
                 activeAdjustment.SetSampleRate((float)sampleRate);
-                appliedPpm = requestedPpm;
+                appliedPpm = decision.AppliedAdjustmentPpm;
                 Interlocked.Exchange(ref appliedPpmBits, BitConverter.DoubleToInt64Bits(appliedPpm));
+            }
+
+            if (Math.Abs(appliedPpm) >= double.Epsilon)
+            {
+                activeAdjustment.SetSampleRate((float)nominalSampleRate);
+                Interlocked.Exchange(ref requestedPpmBits, BitConverter.DoubleToInt64Bits(0));
+                Interlocked.Exchange(ref appliedPpmBits, BitConverter.DoubleToInt64Bits(0));
             }
         }
         catch (COMException exception)
@@ -185,9 +211,16 @@ internal sealed class AudioQueueRateController : IDisposable
             }
             finally
             {
-                completion.TrySetResult();
+                workerExited.TrySetResult();
             }
         }
+    }
+
+    private async Task CompleteLifetimeAsync()
+    {
+        await Task.WhenAll(workerExited.Task, startFinished.Task).ConfigureAwait(false);
+        DisposeHandles();
+        completion.TrySetResult();
     }
 
     private void SafeWarning(string message)

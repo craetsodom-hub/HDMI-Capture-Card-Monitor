@@ -2,6 +2,7 @@ using HdmiCaptureCardMonitor.Capture.Audio;
 using HdmiCaptureCardMonitor.Infrastructure;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using Xunit.Abstractions;
 
 namespace HdmiCaptureCardMonitor.Tests;
@@ -36,7 +37,11 @@ public sealed class AudioHardwareIntegrationTests
         Assert.True(endpoints.IsSuccess, endpoints.Failure?.CustomerMessage);
         var capture = endpoints.CaptureEndpoints[0];
         var preferAudioClient3 = !string.Equals(Environment.GetEnvironmentVariable("HDMI_AUDIO_FORCE_CLASSIC"), "1", StringComparison.Ordinal);
-        using var service = new WasapiAudioMonitorService(NullApplicationLogger.Instance, preferAudioClient3);
+        var targetPeriods = int.TryParse(Environment.GetEnvironmentVariable("HDMI_AUDIO_QUEUE_TARGET_PERIODS"), out var configuredTarget)
+            ? Math.Clamp(configuredTarget, 2, 3)
+            : 2;
+        using var service = new WasapiAudioMonitorService(
+            NullApplicationLogger.Instance, preferAudioClient3, targetPeriods);
         var diagnostics = new ConcurrentQueue<(TimeSpan Elapsed, AudioMonitorDiagnostics Value)>();
         var clock = Stopwatch.StartNew();
         service.DiagnosticsUpdated += (_, e) => diagnostics.Enqueue((clock.Elapsed, e.Diagnostics));
@@ -84,12 +89,30 @@ public sealed class AudioHardwareIntegrationTests
             .ToArray();
         var adjustmentMinimum = adjustments.Length == 0 ? (double?)null : adjustments.Min();
         var adjustmentMaximum = adjustments.Length == 0 ? (double?)null : adjustments.Max();
+        var requestedAdjustments = samples
+            .Where(sample => sample.Value.RequestedRateAdjustment.HasValue)
+            .Select(sample => sample.Value.RequestedRateAdjustment!.Value)
+            .ToArray();
+        var requestedMinimum = requestedAdjustments.Length == 0 ? (double?)null : requestedAdjustments.Min();
+        var requestedMaximum = requestedAdjustments.Length == 0 ? (double?)null : requestedAdjustments.Max();
         output.WriteLine("Observed queue range={0}..{1} frames; rate-adjustment range={2:0.0}..{3:0.0} ppm",
             queueMinimum, queueMaximum, adjustmentMinimum, adjustmentMaximum);
+        output.WriteLine("Target={0} periods/{1} frames; average queue={2:0.0} frames; requested range={3:0.0}..{4:0.0} ppm; saturation={5} ms; direction changes={6}",
+            targetPeriods, final.TargetQueueFrames, final.AverageQueueFrames,
+            requestedMinimum, requestedMaximum, final.RateAdjustmentSaturationMilliseconds,
+            final.RateAdjustmentDirectionChangeCount);
         output.WriteLine("Discontinuity observations: {0}", discontinuityObservations.Count == 0
             ? "none"
             : string.Join(", ", discontinuityObservations.Select(observation =>
                 $"t={observation.Elapsed.TotalSeconds:0.000}s count={observation.Count}")));
+        foreach (var observation in final.DiscontinuityTimeline ?? [])
+            output.WriteLine("Discontinuity detail: t={0:0.000}s phase={1} frames={2} deviceDelta={3} qpcDelta={4} queue={5}->{6} requested={7:0.0}ppm applied={8:0.0}ppm underrunFollowed={9} overrunFollowed={10}",
+                observation.MonotonicTime.TotalSeconds, observation.Phase, observation.PacketFrameCount,
+                observation.DevicePositionDelta?.ToString(CultureInfo.InvariantCulture) ?? "n/a",
+                observation.QpcPositionDelta?.ToString(CultureInfo.InvariantCulture) ?? "n/a",
+                observation.QueueBeforeFrames, observation.QueueAfterFrames,
+                observation.RequestedRateAdjustmentPpm, observation.AppliedRateAdjustmentPpm,
+                observation.UnderrunFollowed, observation.OverrunFollowed);
         output.WriteLine(
             "Path={0}; format={1}; periods={2}/{3}; buffers={4}/{5}; queue={6} max={7}; captured={8}; rendered={9}; silent={10}; underruns={11}; overruns={12}; dropped={13}; discontinuities={14}; timestampErrors={15}; adjustment={16:0}ppm",
             final.InitializationPath, final.CommonFormat, final.CapturePeriodFrames, final.RenderPeriodFrames,

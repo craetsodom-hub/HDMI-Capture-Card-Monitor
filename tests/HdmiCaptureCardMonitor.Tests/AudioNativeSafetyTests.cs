@@ -39,6 +39,30 @@ public sealed class AudioNativeSafetyTests
     }
 
     [Fact]
+    public void DiscontinuityCallbackRecordsPacketAndExactQueueChange()
+    {
+        var packet = new AudioCapturePacket(
+            0, 48,
+            (uint)(_AUDCLNT_BUFFERFLAGS.AUDCLNT_BUFFERFLAGS_SILENT |
+                _AUDCLNT_BUFFERFLAGS.AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY),
+            123, 456);
+        var access = new FakeCaptureAccess(packet);
+        var ring = new RecordingFrameBuffer();
+        (AudioCapturePacket Packet, int Before, int After)? observed = null;
+
+        var result = AudioNativeBufferProcessor.ProcessCapture(
+            access, ring, Stereo,
+            (value, before, after) => observed = (value, before, after));
+
+        Assert.Equal(1, result.Discontinuities);
+        Assert.NotNull(observed);
+        Assert.Equal(packet, observed.Value.Packet);
+        Assert.Equal(0, observed.Value.Before);
+        Assert.Equal(48, observed.Value.After);
+        Assert.Equal(1, access.ReleaseCalls);
+    }
+
+    [Fact]
     public void NonSilentCaptureWithNullPointerIsTypedAndReleasedExactlyOnce()
     {
         var access = new FakeCaptureAccess(new AudioCapturePacket(0, 12, 0, 0, 0));
@@ -170,6 +194,7 @@ public sealed class AudioNativeSafetyTests
         public int WrittenFrames { get; private set; }
         public bool LastWriteWasSilent { get; private set; }
         public bool LastSourceWasEmpty { get; private set; }
+        public int QueuedFrames => WrittenFrames;
 
         public AudioBufferWriteResult Write(ReadOnlySpan<float> source, int frameCount, bool silent = false)
         {

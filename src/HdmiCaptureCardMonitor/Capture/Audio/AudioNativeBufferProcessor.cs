@@ -5,6 +5,7 @@ namespace HdmiCaptureCardMonitor.Capture.Audio;
 
 internal interface IAudioFrameBuffer
 {
+    int QueuedFrames { get; }
     AudioBufferWriteResult Write(ReadOnlySpan<float> source, int frameCount, bool silent = false);
     AudioBufferReadResult Read(Span<float> destination, int requestedFrames);
 }
@@ -51,7 +52,8 @@ internal static class AudioNativeBufferProcessor
     internal static unsafe AudioCaptureBatchResult ProcessCapture(
         IAudioCaptureBufferAccess access,
         IAudioFrameBuffer ring,
-        AudioStreamFormat format)
+        AudioStreamFormat format,
+        Action<AudioCapturePacket, int, int>? discontinuityObserved = null)
     {
         long captured = 0;
         long silentFrames = 0;
@@ -92,10 +94,15 @@ internal static class AudioNativeBufferProcessor
                     samples = new ReadOnlySpan<float>((void*)packet.Data, sampleCount);
                 }
 
+                var queueBefore = ring.QueuedFrames;
                 ring.Write(samples, count, silent);
                 captured += packet.FrameCount;
                 if (silent) silentFrames += packet.FrameCount;
-                if ((flags & _AUDCLNT_BUFFERFLAGS.AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0) discontinuities++;
+                if ((flags & _AUDCLNT_BUFFERFLAGS.AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0)
+                {
+                    discontinuities++;
+                    discontinuityObserved?.Invoke(packet, queueBefore, ring.QueuedFrames);
+                }
                 if ((flags & _AUDCLNT_BUFFERFLAGS.AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0) timestampErrors++;
                 lastDevicePosition = packet.DevicePosition;
                 lastQpcPosition = packet.QpcPosition;

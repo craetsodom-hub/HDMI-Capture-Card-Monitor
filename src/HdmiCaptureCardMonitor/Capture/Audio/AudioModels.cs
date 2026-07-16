@@ -42,6 +42,28 @@ public enum AudioMonitorInitializationPath
     ClassicSharedFallback
 }
 
+public enum AudioDiscontinuityPhase
+{
+    Startup,
+    Transition,
+    SteadyState
+}
+
+public sealed record AudioDiscontinuityObservation(
+    TimeSpan MonotonicTime,
+    int PacketFrameCount,
+    long? DevicePositionDelta,
+    long? QpcPositionDelta,
+    int QueueBeforeFrames,
+    int QueueAfterFrames,
+    double? RequestedRateAdjustmentPpm,
+    double? AppliedRateAdjustmentPpm,
+    long UnderrunCountAtObservation,
+    long OverrunCountAtObservation,
+    AudioDiscontinuityPhase Phase,
+    bool UnderrunFollowed = false,
+    bool OverrunFollowed = false);
+
 /// <summary>
 /// Managed endpoint metadata. Id is deliberately opaque and ToString returns only
 /// the customer-safe display name so normal binding and interpolation cannot leak it.
@@ -244,7 +266,12 @@ public sealed record AudioMonitorDiagnostics(
     ulong LastCaptureQpcPosition = 0,
     bool MmcssRegistered = false,
     int RingBufferCapacityFrames = 0,
-    int TargetQueueFrames = 0)
+    int TargetQueueFrames = 0,
+    double AverageQueueFrames = 0,
+    double? RequestedRateAdjustment = null,
+    long RateAdjustmentSaturationMilliseconds = 0,
+    long RateAdjustmentDirectionChangeCount = 0,
+    IReadOnlyList<AudioDiscontinuityObservation>? DiscontinuityTimeline = null)
 {
     public double CurrentQueueMilliseconds => CommonFormat.FramesToMilliseconds(CurrentQueueFrames);
     public double CapturePeriodMilliseconds => CommonFormat.FramesToMilliseconds(CapturePeriodFrames);

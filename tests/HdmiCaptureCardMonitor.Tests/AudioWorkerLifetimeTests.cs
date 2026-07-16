@@ -34,6 +34,7 @@ public sealed class AudioWorkerLifetimeTests
         release.Set();
         await controller.Completion.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.True(controller.Completion.IsCompletedSuccessfully);
+        Assert.True(controller.HandlesReleased);
     }
 
     [Fact]
@@ -96,6 +97,158 @@ public sealed class AudioWorkerLifetimeTests
         Assert.True(publisher.Stop());
         await publisher.Completion;
         Assert.True(publisher.Completion.IsCompletedSuccessfully);
+        Assert.True(publisher.HandlesReleased);
+    }
+
+    [Fact]
+    public async Task DiagnosticsPublisherEventuallyReleasesHandlesAfterTimedOutStop()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var publisher = new LatestAudioDiagnosticsPublisher(_ =>
+        {
+            entered.Set();
+            release.Wait();
+        }, TimeSpan.FromMilliseconds(20));
+
+        publisher.Start();
+        publisher.PublishLatest(CreateDiagnosticsEventArgs());
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+        Assert.False(publisher.Stop());
+        Assert.False(publisher.HandlesReleased);
+
+        release.Set();
+        await publisher.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(publisher.HandlesReleased);
+        Assert.True(publisher.Stop());
+    }
+
+    [Fact]
+    public async Task SlowControlSubscriberCannotDelayProducerAndStopWaitsForIt()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var publisher = new AudioControlEventPublisher(_ =>
+        {
+            entered.Set();
+            release.Wait();
+        }, _ => { }, stopTimeout: TimeSpan.FromMilliseconds(20));
+
+        publisher.Start();
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Off, AudioMonitorState.Starting)));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Starting, AudioMonitorState.Monitoring)));
+        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(100));
+        Assert.False(publisher.Stop());
+        Assert.False(publisher.Completion.IsCompleted);
+
+        release.Set();
+        await publisher.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.True(publisher.HandlesReleased);
+    }
+
+    [Fact]
+    public async Task ControlPublisherContainsThrowingSubscriberAndDeliversToLaterSubscriber()
+    {
+        var delivered = 0;
+        EventHandler<AudioMonitorStateChangedEventArgs> handlers = (_, _) => throw new InvalidOperationException("observer");
+        handlers += (_, _) => delivered++;
+        using var publisher = new AudioControlEventPublisher(
+            value => SafeAudioEventDispatch.Publish(handlers, this, value, NullApplicationLogger.Instance, "test"),
+            _ => { });
+
+        publisher.Start();
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Off, AudioMonitorState.Starting)));
+        Assert.True(publisher.Stop());
+        await publisher.Completion;
+        Assert.Equal(1, delivered);
+    }
+
+    [Fact]
+    public async Task ControlPublisherPreservesStateOrder()
+    {
+        var delivered = new List<AudioMonitorState>();
+        using var publisher = new AudioControlEventPublisher(value => delivered.Add(value.CurrentState), _ => { });
+        publisher.Start();
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Off, AudioMonitorState.Starting)));
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Starting, AudioMonitorState.Monitoring)));
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Monitoring, AudioMonitorState.Muted)));
+        Assert.True(publisher.Stop());
+        await publisher.Completion;
+
+        Assert.Equal([AudioMonitorState.Starting, AudioMonitorState.Monitoring, AudioMonitorState.Muted], delivered);
+    }
+
+    [Fact]
+    public async Task ControlPublisherCoalescesRedundantPendingState()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var delivered = new List<AudioMonitorState>();
+        using var publisher = new AudioControlEventPublisher(value =>
+        {
+            delivered.Add(value.CurrentState);
+            if (value.CurrentState == AudioMonitorState.Starting)
+            {
+                entered.Set();
+                release.Wait();
+            }
+        }, _ => { });
+
+        publisher.Start();
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Off, AudioMonitorState.Starting)));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Starting, AudioMonitorState.Monitoring)));
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Starting, AudioMonitorState.Monitoring)));
+        release.Set();
+        Assert.True(publisher.Stop());
+        await publisher.Completion;
+
+        Assert.Equal([AudioMonitorState.Starting, AudioMonitorState.Monitoring], delivered);
+    }
+
+    [Fact]
+    public async Task FailureIsDeliveredUnderStateQueuePressure()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var failures = 0;
+        using var publisher = new AudioControlEventPublisher(value =>
+        {
+            if (value.CurrentState == AudioMonitorState.Starting)
+            {
+                entered.Set();
+                release.Wait();
+            }
+        }, _ => failures++, capacity: 2);
+
+        publisher.Start();
+        Assert.True(publisher.PublishState(StateChange(AudioMonitorState.Off, AudioMonitorState.Starting)));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(1)));
+        _ = publisher.PublishState(StateChange(AudioMonitorState.Starting, AudioMonitorState.Monitoring));
+        _ = publisher.PublishState(StateChange(AudioMonitorState.Monitoring, AudioMonitorState.Muted));
+        _ = publisher.PublishState(StateChange(AudioMonitorState.Muted, AudioMonitorState.Stopping));
+        Assert.True(publisher.PublishFailure(FailureEvent()));
+
+        release.Set();
+        Assert.True(publisher.Stop());
+        await publisher.Completion;
+        Assert.Equal(1, failures);
+    }
+
+    [Fact]
+    public async Task NoControlEventIsDeliveredAfterCompletion()
+    {
+        var delivered = 0;
+        using var publisher = new AudioControlEventPublisher(_ => delivered++, _ => delivered++);
+        publisher.Start();
+        Assert.True(publisher.Stop());
+        await publisher.Completion;
+
+        Assert.False(publisher.PublishState(StateChange(AudioMonitorState.Off, AudioMonitorState.Starting)));
+        Assert.False(publisher.PublishFailure(FailureEvent()));
+        Assert.Equal(0, delivered);
     }
 
     [Fact]
@@ -135,6 +288,13 @@ public sealed class AudioWorkerLifetimeTests
             1, 1, 0, 0, 0, 0, 0, 0,
             100, false, null, null, null));
     }
+
+    private static AudioMonitorStateChangedEventArgs StateChange(AudioMonitorState previous, AudioMonitorState current) =>
+        new(Guid.NewGuid(), previous, current);
+
+    private static AudioMonitorFailureEventArgs FailureEvent() => new(
+        Guid.NewGuid(),
+        new AudioMonitorFailure(AudioMonitorFailureCategory.AudioProcessingFailure, "Audio stopped."));
 
     private static void WaitUntil(Func<bool> predicate)
     {
